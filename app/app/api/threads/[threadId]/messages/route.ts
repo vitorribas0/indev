@@ -23,7 +23,13 @@ export async function POST(request: Request, context: { params: Promise<{ thread
       model: process.env.OPENAI_MODEL || "gpt-5.4",
       store: false,
       instructions: "Você é o InDev, um assistente de desenvolvimento. Seja objetivo, explique o plano antes de mudanças relevantes e não alegue executar ferramentas que não estão conectadas.",
-      input: thread.messages.map((message) => ({ role: message.role, content: message.content })),
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: thread.messages.map((message) => `${message.role === "user" ? "Usuário" : "InDev"}: ${message.content}`).join("\n\n") },
+          ...thread.files.map((file) => ({ type: "input_file" as const, file_id: file.openaiFileId })),
+        ],
+      }],
     });
     appendAssistantMessage(thread, response.output_text || "Não recebi texto de resposta do modelo.");
   } catch (error) {

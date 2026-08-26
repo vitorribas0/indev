@@ -13,11 +13,21 @@ export type Message = {
   createdAt: string;
 };
 
+export type ThreadFile = {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  openaiFileId: string;
+  createdAt: string;
+};
+
 export type Thread = {
   id: string;
   title: string;
   messages: Message[];
   events: ToolEvent[];
+  files: ThreadFile[];
   createdAt: string;
   updatedAt: string;
 };
@@ -30,7 +40,7 @@ function id(prefix: string) {
 
 export function createThread(title = "Nova tarefa") {
   const now = new Date().toISOString();
-  const thread: Thread = { id: id("thread"), title, messages: [], events: [], createdAt: now, updatedAt: now };
+  const thread: Thread = { id: id("thread"), title, messages: [], events: [], files: [], createdAt: now, updatedAt: now };
   threads.set(thread.id, thread);
   return thread;
 }
@@ -46,6 +56,13 @@ export function getThread(threadId: string) {
 export function appendUserMessage(thread: Thread, content: string) {
   thread.messages.push({ id: id("message"), role: "user", content, createdAt: new Date().toISOString() });
   thread.updatedAt = new Date().toISOString();
+}
+
+export function addThreadFile(thread: Thread, file: Omit<ThreadFile, "id" | "createdAt">) {
+  const stored: ThreadFile = { ...file, id: id("file"), createdAt: new Date().toISOString() };
+  thread.files.push(stored);
+  thread.updatedAt = new Date().toISOString();
+  return stored;
 }
 
 export function appendAssistantMessage(thread: Thread, content: string) {

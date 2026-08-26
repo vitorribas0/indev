@@ -1,0 +1,6 @@
+.file-input { display: none; }
+.attachments { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 7px; }
+.attachments span { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; border: 1px solid rgba(255, 205, 161, .25); border-radius: 7px; background: rgba(255, 175, 102, .12); color: #ffd9bd; font-size: 10px; }
+.composer button:disabled { opacity: .45; cursor: wait; }
+.file-card { margin-bottom: 7px; }
+.file-card b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
