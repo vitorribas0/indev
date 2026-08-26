@@ -28,6 +28,33 @@ O objetivo não é tentar reproduzir, do zero, um modelo de IA de fronteira. O o
 | Qualidade | Propor plano, revisar o próprio trabalho e validar antes de entregar. |
 | Experiência | Ser simples para começar, mas dar visibilidade e controle a quem desenvolve. |
 
+## Direção de interface
+
+O InDev terá uma experiência de conversa orientada a tarefas, com uma área de contexto expansível para acompanhar o trabalho em tempo real. A referência é a clareza de ferramentas como o Codex, mas com marca, componentes e identidade visual próprios.
+
+```
+┌───────────────────────────────┬──────────────────────────────────┐
+│ InDev                         │ Tarefa atual                     │
+│                               │ ──────────────────────────────── │
+│ Conversa                      │ Arquivos alterados               │
+│                               │ • src/...                        │
+│ Você: implemente X            │                                  │
+│                               │ Execução                         │
+│ InDev: plano + progresso      │ ✓ testes                         │
+│                               │ • comando em andamento           │
+│ [ Escreva uma mensagem... ]   │                                  │
+│                               │ Resultado / revisão              │
+└───────────────────────────────┴──────────────────────────────────┘
+```
+
+### Painel lateral de tarefa
+
+- Pode ser aberto, fechado ou redimensionado.
+- Mostra plano, progresso e arquivos envolvidos.
+- Exibe comandos e testes: aguardando, em execução, concluído ou com falha.
+- Reúne diffs, resultados e pontos que precisam de aprovação.
+- Permite voltar a tarefas anteriores sem perder o histórico.
+
 ## Primeira hipótese de público
 
 Pessoas e pequenas equipes que desenvolvem software e querem um agente de IA que trabalhe dentro do projeto, com contexto e transparência — não apenas gere trechos isolados de código.
@@ -71,3 +98,4 @@ Pessoas e pequenas equipes que desenvolvem software e querem um agente de IA que
 | --- | --- | --- |
 | 2026-08-26 | Repositório criado | Centralizar o mapeamento e a evolução da ideia. |
 | 2026-08-26 | InDev como ambiente de desenvolvimento com IA | Focar no produto e na experiência, combinando modelos de IA existentes em vez de tentar treinar um modelo de fronteira do zero. |
+| 2026-08-26 | Interface de conversa com painel lateral de tarefa | Tornar visível o trabalho do agente: arquivos, execuções, resultados e aprovações. |
