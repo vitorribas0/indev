@@ -55,6 +55,8 @@ O InDev terá uma experiência de conversa orientada a tarefas, com uma área de
 - Reúne diffs, resultados e pontos que precisam de aprovação.
 - Permite voltar a tarefas anteriores sem perder o histórico.
 
+O primeiro preview visual está em [design/indev-preview.html](design/indev-preview.html).
+
 ## Primeira hipótese de público
 
 Pessoas e pequenas equipes que desenvolvem software e querem um agente de IA que trabalhe dentro do projeto, com contexto e transparência — não apenas gere trechos isolados de código.
