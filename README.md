@@ -57,6 +57,10 @@ O InDev terá uma experiência de conversa orientada a tarefas, com uma área de
 
 O primeiro preview visual está em [design/indev-preview.html](design/indev-preview.html).
 
+## Implementação atual
+
+A base do InDev está em `app/` e inclui uma API própria para tarefas, histórico de mensagens e eventos de execução. O executor de comandos ainda está intencionalmente bloqueado até que o sandbox e as aprovações sejam conectados.
+
 ## Primeira hipótese de público
 
 Pessoas e pequenas equipes que desenvolvem software e querem um agente de IA que trabalhe dentro do projeto, com contexto e transparência — não apenas gere trechos isolados de código.
