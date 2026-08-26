@@ -1,4 +1,5 @@
-import { appendUserMessage, createPlannedResponse, getThread } from "@/lib/agent-store";
+import OpenAI from "openai";
+import { appendAssistantMessage, appendUserMessage, getThread } from "@/lib/agent-store";
 
 export async function POST(request: Request, context: { params: Promise<{ threadId: string }> }) {
   const { threadId } = await context.params;
@@ -9,6 +10,25 @@ export async function POST(request: Request, context: { params: Promise<{ thread
     return Response.json({ error: "Uma mensagem é obrigatória." }, { status: 400 });
   }
   appendUserMessage(thread, body.content.trim());
-  createPlannedResponse(thread);
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return Response.json({
+      error: "A chave da OpenAI ainda não foi configurada. Adicione OPENAI_API_KEY ao arquivo .env.local.",
+      thread,
+    }, { status: 503 });
+  }
+  const client = new OpenAI({ apiKey });
+  try {
+    const response = await client.responses.create({
+      model: process.env.OPENAI_MODEL || "gpt-5.4",
+      store: false,
+      instructions: "Você é o InDev, um assistente de desenvolvimento. Seja objetivo, explique o plano antes de mudanças relevantes e não alegue executar ferramentas que não estão conectadas.",
+      input: thread.messages.map((message) => ({ role: message.role, content: message.content })),
+    });
+    appendAssistantMessage(thread, response.output_text || "Não recebi texto de resposta do modelo.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Não foi possível comunicar com a OpenAI.";
+    return Response.json({ error: message, thread }, { status: 502 });
+  }
   return Response.json({ thread });
 }

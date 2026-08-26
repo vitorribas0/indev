@@ -48,7 +48,7 @@ export function appendUserMessage(thread: Thread, content: string) {
   thread.updatedAt = new Date().toISOString();
 }
 
-export function createPlannedResponse(thread: Thread) {
+export function appendAssistantMessage(thread: Thread, content: string) {
   const event: ToolEvent = {
     id: id("event"),
     kind: "read",
@@ -57,12 +57,13 @@ export function createPlannedResponse(thread: Thread) {
     status: "completed",
   };
   thread.events.unshift(event);
-  thread.messages.push({
+  const message: Message = {
     id: id("message"),
     role: "assistant",
-    content: "Recebi a tarefa. O backend registrou a conversa e preparou uma execução planejada. Para executar mudanças reais, o próximo passo é conectar um provedor de IA e um executor isolado com aprovação.",
+    content,
     createdAt: new Date().toISOString(),
-  });
+  };
+  thread.messages.push(message);
   thread.updatedAt = new Date().toISOString();
-  return event;
+  return { event, message };
 }
