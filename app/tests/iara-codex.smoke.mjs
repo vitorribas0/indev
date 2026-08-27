@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { WebSocket } from "ws";
 import {
   codexAppServerArgs,
@@ -30,7 +31,18 @@ function start(command, args) {
   children.push(child);
   child.stdout.on("data", (chunk) => { diagnostics += String(chunk); });
   child.stderr.on("data", (chunk) => { diagnostics += String(chunk); });
+  child.on("error", (error) => { diagnostics += `\n${command}: ${error.message}`; });
   return child;
+}
+
+function pythonCommand() {
+  const configuredRoot = process.env.Python_ROOT_DIR || process.env.pythonLocation;
+  if (configuredRoot) {
+    return process.platform === "win32"
+      ? join(configuredRoot, "python.exe")
+      : join(configuredRoot, "bin", "python3");
+  }
+  return process.platform === "win32" ? "python" : "python3";
 }
 
 async function waitFor(url, label, timeoutMs = 20_000) {
@@ -47,8 +59,22 @@ async function waitFor(url, label, timeoutMs = 20_000) {
 }
 
 try {
-  start(process.platform === "win32" ? "python" : "python3", [iaraServerEntrypoint]);
+  start(pythonCommand(), [iaraServerEntrypoint]);
   await waitFor(runtime.iaraProxyReady, "adaptador Iara");
+
+  const unauthorized = await fetch(`${runtime.iaraProxyBaseUrl}/v1/models`);
+  assert.equal(unauthorized.status, 401, diagnostics);
+  const directStream = await fetch(`${runtime.iaraProxyBaseUrl}/v1/responses`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${runtime.env.INDEV_IARA_PROXY_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: runtime.defaultModel, input: "teste", stream: true }),
+  });
+  assert.equal(directStream.status, 200, diagnostics);
+  const directEvents = await directStream.text();
+  assert.match(directEvents, /response\.output_text\.delta/, diagnostics);
+  assert.match(directEvents, /response\.completed/, diagnostics);
+  assert.match(directEvents, /\[DONE\]/, diagnostics);
+
   start(process.execPath, codexAppServerArgs(runtime));
   await waitFor(runtime.appServerReady, "Codex App Server com Iara");
 

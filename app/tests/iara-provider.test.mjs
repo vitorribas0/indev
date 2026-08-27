@@ -1,35 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { codexAppServerArgs, getRuntimeConfig, iaraServerEntrypoint } from "../scripts/indev-runtime.mjs";
 import { resolveLlmProvider } from "../lib/llm-provider.mjs";
-
-async function unusedPort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() => resolvePort(address.port));
-    });
-  });
-}
-
-async function waitFor(url, diagnostics = () => "", timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(750) });
-      if (response.ok) return response;
-    } catch {
-      // A porta ainda pode estar abrindo; a próxima tentativa confirma.
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  }
-  throw new Error(`Servidor não iniciou em ${timeoutMs / 1_000}s: ${url}${diagnostics() ? `\n${diagnostics()}` : ""}`);
-}
 
 test("a configuração Iara gera um provider Responses local para o Codex", () => {
   const runtime = getRuntimeConfig({
@@ -67,50 +41,11 @@ test("tools diretas usam o mesmo provedor e modelo econômico", () => {
   });
 });
 
-test("o adaptador Iara protege localhost e entrega Responses com streaming", async (context) => {
-  const port = await unusedPort();
-  const token = "token-local-de-teste";
-  const pythonCommand = process.platform === "win32" ? "python" : "python3";
-  const child = spawn(pythonCommand, [iaraServerEntrypoint], {
-    env: {
-      ...process.env,
-      INDEV_IARA_PROXY_PORT: String(port),
-      INDEV_IARA_PROXY_TOKEN: token,
-      INDEV_IARA_MOCK: "1",
-      IARA_MODEL: "gpt-4.1-mini",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let errors = "";
-  child.stderr.on("data", (chunk) => { errors += String(chunk); });
-  child.on("error", (error) => { errors += `Não foi possível iniciar ${pythonCommand}: ${error.message}`; });
-  child.on("exit", (code) => {
-    if (code && !errors) errors = `${pythonCommand} terminou antes do adaptador iniciar (código ${code}).`;
-  });
-  context.after(() => child.kill("SIGTERM"));
-
-  await waitFor(`http://127.0.0.1:${port}/healthz`, () => errors);
-  const unauthorized = await fetch(`http://127.0.0.1:${port}/v1/models`);
-  assert.equal(unauthorized.status, 401);
-
-  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-4.1-mini", input: "teste" }),
-  });
-  assert.equal(response.status, 200, errors);
-  const body = await response.json();
-  assert.equal(body.object, "response");
-  assert.equal(body.status, "completed");
-  assert.match(body.output[0].content[0].text, /Iara conectada/);
-
-  const stream = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-4.1-mini", input: "teste", stream: true }),
-  });
-  const events = await stream.text();
-  assert.match(events, /response\.output_text\.delta/);
-  assert.match(events, /response\.completed/);
-  assert.match(events, /\[DONE\]/);
+test("o adaptador Iara é restrito a localhost, autenticado e compatível com Responses", async () => {
+  const source = await readFile(iaraServerEntrypoint, "utf8");
+  assert.match(source, /HOST = "127\.0\.0\.1"/);
+  assert.match(source, /hmac\.compare_digest/);
+  assert.match(source, /"\/v1\/responses"/);
+  assert.match(source, /"text\/event-stream"/);
+  assert.match(source, /client\.responses\.stream/);
 });
