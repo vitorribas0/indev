@@ -60,6 +60,11 @@ async function fileAsBase64(file: File) {
   return url.slice(url.indexOf(",") + 1);
 }
 
+function joinAgentPath(base: string, ...parts: string[]) {
+  const separator = base.includes("\\") ? "\\" : "/";
+  return [base.replace(/[\\/]+$/, ""), ...parts.map((part) => part.replace(/^[\\/]+|[\\/]+$/g, ""))].join(separator);
+}
+
 export default function Home() {
   const clientRef = useRef<CodexAppClient | null>(null);
   const activeThreadRef = useRef("");
@@ -310,8 +315,8 @@ export default function Home() {
     try {
       if (engine === "codex" && clientRef.current?.connected && cwd) {
         const safeName = selected.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const uploadDir = `${cwd}/.indev/uploads`;
-        const path = `${uploadDir}/${Date.now()}-${safeName}`;
+        const uploadDir = joinAgentPath(cwd, ".indev", "uploads");
+        const path = joinAgentPath(uploadDir, `${Date.now()}-${safeName}`);
         await clientRef.current.request("fs/createDirectory", { path: uploadDir, recursive: true });
         await clientRef.current.request("fs/writeFile", { path, dataBase64: await fileAsBase64(selected) }, 60_000);
         setFiles((current) => [...current, { id: crypto.randomUUID(), name: selected.name, size: selected.size, type: selected.type || "application/octet-stream", path }]);
@@ -337,7 +342,7 @@ export default function Home() {
   }
 
   function addContextFile(entry: FileEntry) {
-    const path = `${cwd}/${entry.fileName}`;
+    const path = joinAgentPath(cwd, entry.fileName);
     setContextFiles((current) => current.some((file) => file.path === path) ? current : [...current, { id: crypto.randomUUID(), name: entry.fileName, size: 0, type: entry.isDirectory ? "inode/directory" : "text/plain", path }]);
     setMenu(null);
   }
@@ -416,7 +421,7 @@ export default function Home() {
           <h2>Execuções</h2>{events.length ? events.map((entry) => <div className="event-card" key={entry.id}><span className={entry.status}></span><div><b>{entry.title}</b><small>{entry.detail || entry.status}</small></div></div>) : <p className="muted">Tools e comandos aparecerão aqui em tempo real.</p>}
           {diff && <><h2>Últimas alterações</h2><pre className="diff-preview">{diff.slice(-2400)}</pre></>}
         </>}
-        {activeTab === "files" && <><h2>Contexto desta mensagem</h2>{allAttachments.length ? allAttachments.map((file) => <div className="backend-card file-card" key={file.id}><b>{file.name}</b><span>{file.path || `${Math.max(1, Math.round(file.size / 1024))} KB`}</span></div>) : <p className="muted">Use + para subir um arquivo ou @ para selecionar algo do projeto.</p>}<h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split("/").pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div></>}
+        {activeTab === "files" && <><h2>Contexto desta mensagem</h2>{allAttachments.length ? allAttachments.map((file) => <div className="backend-card file-card" key={file.id}><b>{file.name}</b><span>{file.path || `${Math.max(1, Math.round(file.size / 1024))} KB`}</span></div>) : <p className="muted">Use + para subir um arquivo ou @ para selecionar algo do projeto.</p>}<h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split(/[\\/]/).pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div></>}
         {activeTab === "terminal" && <><h2>Saída do terminal</h2><pre className="terminal-output">{terminal || "Nenhum comando executado nesta tarefa."}</pre></>}
         <h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "Responses API" : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${sandbox}` : "Reserva segura"}</span></div>
       </div>

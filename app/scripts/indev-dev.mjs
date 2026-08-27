@@ -1,14 +1,34 @@
 import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
+import {
+  appRoot,
+  assertLocalDependencies,
+  codexEntrypoint,
+  ensureRuntimeFolders,
+  getRuntimeConfig,
+  loadLocalEnvironment,
+  vinextEntrypoint,
+  workspaceRoot,
+} from "./indev-runtime.mjs";
 
-const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workspaceRoot = resolve(appRoot, "..");
+loadLocalEnvironment();
+ensureRuntimeFolders();
+assertLocalDependencies();
+
+const runtime = getRuntimeConfig();
 const children = [];
+
+function portIsAvailable(port) {
+  return new Promise((resolveCheck) => {
+    const probe = createServer();
+    probe.once("error", () => resolveCheck(false));
+    probe.listen(port, "127.0.0.1", () => probe.close(() => resolveCheck(true)));
+  });
+}
 
 async function appServerIsReady() {
   try {
-    const response = await fetch("http://127.0.0.1:4501/readyz", { signal: AbortSignal.timeout(700) });
+    const response = await fetch(runtime.appServerReady, { signal: AbortSignal.timeout(700) });
     return response.ok;
   } catch {
     return false;
@@ -17,7 +37,7 @@ async function appServerIsReady() {
 
 async function bridgeIsReady() {
   try {
-    const response = await fetch("http://127.0.0.1:4502/readyz", { signal: AbortSignal.timeout(700) });
+    const response = await fetch(runtime.bridgeReady, { signal: AbortSignal.timeout(700) });
     return response.ok;
   } catch {
     return false;
@@ -33,24 +53,33 @@ async function waitUntil(check, label) {
 }
 
 function start(command, args, cwd, label) {
-  const child = spawn(command, args, { cwd, stdio: "inherit", env: process.env });
+  const child = spawn(command, args, { cwd, stdio: "inherit", env: runtime.env });
   children.push(child);
   child.on("error", (error) => console.error(`[${label}] ${error.message}`));
   return child;
 }
 
-if (!await appServerIsReady()) {
-  start("codex", ["app-server", "--listen", "ws://127.0.0.1:4501"], workspaceRoot, "codex");
-} else {
-  console.log("[indev] Codex App Server já está ativo em ws://127.0.0.1:4501");
+let web;
+try {
+  for (const [label, port] of [["site", runtime.webPort], ["App Server", runtime.appServerPort], ["ponte", runtime.bridgePort]]) {
+    if (!await portIsAvailable(port)) {
+      throw new Error(`A porta ${port} do ${label} já está em uso. Feche a outra execução do InDev e tente novamente.`);
+    }
+  }
+
+  console.log(`[indev] Motor incluído no projeto: ${codexEntrypoint}`);
+  start(process.execPath, [codexEntrypoint, "app-server", "--listen", runtime.appServerWs], workspaceRoot, "codex");
+  await waitUntil(appServerIsReady, "Codex App Server");
+
+  start(process.execPath, ["scripts/codex-bridge.mjs"], appRoot, "bridge");
+  await waitUntil(bridgeIsReady, "Ponte do navegador");
+
+  web = start(process.execPath, [vinextEntrypoint, "dev", "--hostname", "127.0.0.1", "--port", String(runtime.webPort)], appRoot, "web");
+} catch (error) {
+  shutdown("SIGTERM");
+  console.error(`[indev] ${error instanceof Error ? error.message : "Falha ao iniciar."}`);
+  process.exit(1);
 }
-await waitUntil(appServerIsReady, "Codex App Server");
-
-if (!await bridgeIsReady()) start("node", ["scripts/codex-bridge.mjs"], appRoot, "bridge");
-else console.log("[indev] Ponte do navegador já está ativa em ws://127.0.0.1:4502");
-await waitUntil(bridgeIsReady, "Ponte do navegador");
-
-const web = start("npm", ["run", "dev:web"], appRoot, "web");
 
 function shutdown(signal) {
   for (const child of children) if (!child.killed) child.kill(signal);

@@ -61,6 +61,8 @@ O primeiro preview visual está em [design/indev-preview.html](design/indev-prev
 
 A aplicação local está em `app/` e já usa o **Codex App Server público** como motor principal. A interface laranja/glass recebe respostas em streaming e mostra o trabalho do agente em tempo real.
 
+O motor não depende mais do Codex Desktop ou de um comando `codex` instalado na máquina. O pacote oficial `@openai/codex` está fixado no `package.json` e no lockfile; na instalação, o npm baixa automaticamente o binário correto para Windows, macOS ou Linux.
+
 Já estão conectados:
 
 - Conta e catálogo de modelos do Codex local.
@@ -73,17 +75,51 @@ Já estão conectados:
 - Comandos `/new`, `/interrupt`, `/compact`, `/skills` e `/status`.
 - Responses API como modo de reserva caso o App Server não esteja disponível.
 
-### Executar localmente
+### Começar no Windows
 
-Requisitos: aplicativo/CLI Codex instalado e Node.js 22 ou superior.
+Requisito: [Node.js](https://nodejs.org/) 22.13 ou superior. Windows 11 é recomendado.
+
+Depois de clonar o repositório, dê dois cliques em:
+
+```text
+start-indev.cmd
+```
+
+Também é possível usar o PowerShell:
+
+```powershell
+.\start-indev.ps1
+```
+
+O inicializador instala as dependências do próprio projeto, conduz o login da OpenAI e abre todos os componentes locais. Ele não publica o site.
+
+### Começar no macOS ou Linux
+
+```bash
+./start-indev.sh
+```
+
+### Execução manual
 
 ```bash
 cd app
 npm install
+npm run setup
 npm run dev
 ```
 
-Abra `http://localhost:3001`. O comando inicia automaticamente o site local, o Codex App Server e uma ponte WebSocket que só aceita a origem local do InDev. Nada é publicado.
+Abra `http://localhost:3001`. O comando inicia automaticamente o site, o Codex App Server incluído no projeto e uma ponte WebSocket que só aceita a origem local do InDev.
+
+### O que está no repositório
+
+- Frontend, backend de reserva, ponte segura, harness, testes e inicializadores multiplataforma.
+- Versão exata do Codex e de todas as dependências registrada em `package-lock.json`.
+- Configuração de exemplo em `app/.env.example`.
+- Diagnóstico local com `npm run doctor`.
+
+O `node_modules` não é enviado ao Git: ele é reproduzido pelo `npm install` usando o lockfile. Modelos de IA continuam sendo serviços da OpenAI e exigem internet e uma conta ou chave válida.
+
+Login, chave, histórico e uploads ficam em `.indev/` dentro do clone, mas essa pasta é ignorada pelo Git para não vazar dados privados. Como alternativa ao login pelo navegador, copie `app/.env.example` para `app/.env.local` e preencha `OPENAI_API_KEY`; nunca versione esse arquivo.
 
 ### Verificações
 
@@ -97,7 +133,7 @@ O teste de ponta a ponta inicializa o Codex, carrega conta/modelos/skills, armaz
 
 ### Limite honesto
 
-O InDev integra a superfície pública disponível no Codex App Server; ele não copia serviços proprietários internos da OpenAI nem promete paridade com partes que não foram publicadas. A base atual, porém, já é um harness funcional e não apenas uma tela simulada.
+O InDev integra a superfície pública disponível no Codex App Server; ele não copia serviços proprietários internos da OpenAI nem promete paridade com partes que não foram publicadas. O transporte WebSocket do App Server ainda é experimental, por isso esta versão o limita ao computador local. A base atual, porém, já é um harness funcional e não apenas uma tela simulada.
 
 ## Primeira hipótese de público
 

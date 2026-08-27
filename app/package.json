@@ -1,22 +1,25 @@
 {
   "name": "indev",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "node scripts/indev-setup.mjs",
     "dev": "node scripts/indev-dev.mjs",
-    "dev:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "dev:codex": "codex app-server --listen ws://127.0.0.1:4501",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
-    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
+    "setup": "node scripts/indev-setup.mjs",
+    "doctor": "node scripts/indev-setup.mjs --check",
+    "dev:web": "vinext dev --hostname 127.0.0.1 --port 3001",
+    "build": "vinext build",
+    "start": "vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "test:e2e": "node tests/codex-app-server.smoke.mjs",
+    "test:e2e": "node scripts/indev-setup.mjs --non-interactive && node tests/codex-app-server.smoke.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@openai/codex": "0.150.0",
     "drizzle-orm": "0.45.2",
     "openai": "^7.6.0",
     "react": "19.2.6",

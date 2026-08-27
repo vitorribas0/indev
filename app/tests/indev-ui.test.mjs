@@ -34,15 +34,20 @@ test("arquivos, skills, sandbox, terminal e comandos estão ligados ao protocolo
   ]) assert.match(page, new RegExp(capability.replace("/", "\\/")));
 });
 
-test("o comando padrão inicia o site e o App Server juntos", async () => {
-  const [packageJson, launcher] = await Promise.all([
+test("o comando padrão inicia o site e o App Server incluído no projeto", async () => {
+  const [packageJson, launcher, runtime] = await Promise.all([
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("scripts/indev-dev.mjs", root), "utf8"),
+    readFile(new URL("scripts/indev-runtime.mjs", root), "utf8"),
   ]);
 
   assert.match(packageJson, /"dev": "node scripts\/indev-dev\.mjs"/);
-  assert.match(launcher, /codex/);
+  assert.match(packageJson, /"@openai\/codex": "0\.150\.0"/);
+  assert.match(launcher, /codexEntrypoint/);
   assert.match(launcher, /app-server/);
   assert.match(launcher, /codex-bridge/);
-  assert.match(launcher, /vinext|dev:web/);
+  assert.match(launcher, /vinextEntrypoint/);
+  assert.match(runtime, /node_modules.*@openai.*codex/s);
+  assert.match(runtime, /CODEX_HOME/);
+  assert.doesNotMatch(launcher, /spawn\("codex"/);
 });

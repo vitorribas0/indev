@@ -1,15 +1,19 @@
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
+import { getRuntimeConfig } from "./indev-runtime.mjs";
+
+const runtime = getRuntimeConfig();
 
 const allowedOrigins = new Set([
-  "http://localhost:3001",
-  "http://127.0.0.1:3001",
+  `http://localhost:${runtime.webPort}`,
+  `http://127.0.0.1:${runtime.webPort}`,
+  ...(process.env.INDEV_ALLOWED_ORIGINS || "").split(",").map((origin) => origin.trim()).filter(Boolean),
 ]);
 
 const server = createServer((request, response) => {
   if (request.url === "/readyz") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(JSON.stringify({ ready: true, upstream: "ws://127.0.0.1:4501" }));
+    response.end(JSON.stringify({ ready: true, upstream: runtime.appServerWs }));
     return;
   }
   response.writeHead(404).end();
@@ -28,7 +32,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 browserServer.on("connection", (client) => {
-  const upstream = new WebSocket("ws://127.0.0.1:4501");
+  const upstream = new WebSocket(runtime.appServerWs);
   const queued = [];
 
   client.on("message", (data, isBinary) => {
@@ -47,8 +51,8 @@ browserServer.on("connection", (client) => {
   client.on("error", () => upstream.close());
 });
 
-server.listen(4502, "127.0.0.1", () => {
-  console.log("[indev] Ponte segura do navegador: ws://127.0.0.1:4502");
+server.listen(runtime.bridgePort, "127.0.0.1", () => {
+  console.log(`[indev] Ponte segura do navegador: ${runtime.bridgeWs}`);
 });
 
 function shutdown() {
