@@ -34,6 +34,21 @@ test("arquivos, skills, sandbox, terminal e comandos estão ligados ao protocolo
   ]) assert.match(page, new RegExp(capability.replace("/", "\\/")));
 });
 
+test("Excel é extraído e enviado como contexto legível", async () => {
+  const [page, extractor, packageJson] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("lib/spreadsheet-context.ts", root), "utf8"),
+    readFile(new URL("package.json", root), "utf8"),
+  ]);
+
+  assert.match(packageJson, /"read-excel-file": "9\.3\.10"/);
+  assert.match(extractor, /readXlsxFile/);
+  assert.match(extractor, /MAX_CONTEXT_CHARACTERS/);
+  assert.match(page, /contextPath/);
+  assert.match(page, /conteúdo extraído/);
+  assert.match(page, /isLegacyExcelWorkbook/);
+});
+
 test("o comando padrão inicia o site e o App Server incluído no projeto", async () => {
   const [packageJson, launcher, runtime] = await Promise.all([
     readFile(new URL("package.json", root), "utf8"),

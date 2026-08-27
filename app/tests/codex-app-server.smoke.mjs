@@ -103,7 +103,7 @@ try {
   });
 
   await request("initialize", {
-    clientInfo: { name: "indev-e2e", title: "InDev E2E", version: "0.3.0" },
+    clientInfo: { name: "indev-e2e", title: "InDev E2E", version: "0.3.1" },
     capabilities: { experimentalApi: true, requestAttestation: false },
   });
   socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized" }));

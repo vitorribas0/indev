@@ -71,6 +71,7 @@ Já estão conectados:
 - Sandbox de leitura ou escrita limitada ao projeto.
 - Pedidos de aprovação para ações protegidas.
 - Upload local de arquivos e seleção de contexto com `@`.
+- Leitura automática de Excel `.xlsx`, incluindo múltiplas abas e milhares de linhas.
 - Catálogo de skills e envio de skills para a tarefa.
 - Comandos `/new`, `/interrupt`, `/compact`, `/skills` e `/status`.
 - Responses API como modo de reserva caso o App Server não esteja disponível.

@@ -2,6 +2,8 @@
 
 Esta pasta contém a interface, as rotas locais, a ponte WebSocket, o inicializador do harness e os testes do InDev.
 
+Arquivos Excel `.xlsx` são convertidos localmente em contexto textual estruturado antes do envio ao agente; o arquivo original também é preservado.
+
 ## Requisitos
 
 - Node.js 22.13 ou superior.

@@ -46,7 +46,7 @@ export class CodexAppClient {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "indev", title: "InDev", version: "0.3.0" },
+      clientInfo: { name: "indev", title: "InDev", version: "0.3.1" },
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     this.notify("initialized");
