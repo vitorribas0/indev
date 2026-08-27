@@ -49,7 +49,23 @@ test("Excel é extraído e enviado como contexto legível", async () => {
   assert.match(page, /isLegacyExcelWorkbook/);
 });
 
-test("o comando padrão inicia o site e o App Server incluído no projeto", async () => {
+test("resultados locais viram prévia e download dentro do InDev", async () => {
+  const [page, artifacts] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("lib/artifacts.ts", root), "utf8"),
+  ]);
+
+  for (const capability of ["fs/readFile", "fs/getMetadata", "fs/watch", "fs/changed"]) {
+    assert.match(page, new RegExp(capability.replace("/", "\\/")));
+  }
+  assert.match(page, /artifact-preview/);
+  assert.match(page, /Baixar ZIP/);
+  assert.match(page, /sandbox="allow-scripts allow-forms allow-modals allow-downloads"/);
+  assert.match(artifacts, /messageWithoutLocalPaths/);
+  assert.match(artifacts, /isPathInsideWorkspace/);
+});
+
+test("o comando padrão inicia a interface local e o App Server incluído no projeto", async () => {
   const [packageJson, launcher, runtime] = await Promise.all([
     readFile(new URL("package.json", root), "utf8"),
     readFile(new URL("scripts/indev-dev.mjs", root), "utf8"),

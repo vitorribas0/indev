@@ -2,6 +2,20 @@
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CodexAppClient, CodexEnvelope } from "@/lib/codex-app-client";
+import {
+  artifactFileName,
+  artifactMimeType,
+  artifactPathKey,
+  artifactPreviewKind,
+  extractArtifactCandidates,
+  isAbsoluteAgentPath,
+  isDeliverableArtifact,
+  isOutputArtifact,
+  isPathInsideWorkspace,
+  messageWithoutLocalPaths,
+  shouldIgnoreArtifactPath,
+  type ArtifactKind,
+} from "@/lib/artifacts";
 import { extractSpreadsheetContext, isExcelWorkbook, isLegacyExcelWorkbook, type SpreadsheetContext } from "@/lib/spreadsheet-context";
 import "./uploads.css";
 
@@ -24,6 +38,23 @@ type Model = { id: string; model: string; displayName: string; isDefault?: boole
 type ThreadSummary = { id: string; preview: string; name?: string | null; updatedAt?: number };
 type Approval = { id: number; method: string; params: Record<string, unknown> };
 type FileEntry = { fileName: string; isDirectory: boolean; isFile: boolean };
+type ArtifactFile = {
+  id: string;
+  name: string;
+  path: string;
+  mime: string;
+  kind: ArtifactKind;
+  size?: number;
+  modifiedAtMs?: number;
+  sourceMessageId?: string;
+};
+type ArtifactPreview = {
+  artifact: ArtifactFile;
+  kind: "html" | "image" | "pdf" | "text";
+  url?: string;
+  text?: string;
+};
+type FileUpdateChange = { path: string; kind?: { type?: "add" | "delete" | "update" } | string; diff?: string };
 type ThreadStartResponse = { thread: { id: string; cwd: string; turns?: Array<{ items: Array<Record<string, unknown>> }> }; model: string; cwd: string };
 
 const slashCommands = [
@@ -76,10 +107,54 @@ function joinAgentPath(base: string, ...parts: string[]) {
   return [base.replace(/[\\/]+$/, ""), ...parts.map((part) => part.replace(/^[\\/]+|[\\/]+$/g, ""))].join(separator);
 }
 
+function resolveAgentPath(base: string, path: string) {
+  return isAbsoluteAgentPath(path) ? path : joinAgentPath(base, path);
+}
+
+function base64Blob(dataBase64: string, mime: string) {
+  const binary = atob(dataBase64);
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < binary.length; offset += 32_768) {
+    const slice = binary.slice(offset, offset + 32_768);
+    const bytes = new Uint8Array(slice.length);
+    for (let index = 0; index < slice.length; index += 1) bytes[index] = slice.charCodeAt(index);
+    chunks.push(bytes);
+  }
+  return new Blob(chunks, { type: mime });
+}
+
+function fileSizeLabel(size?: number) {
+  if (!size) return "arquivo local";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function artifactKindLabel(kind: ArtifactKind) {
+  if (kind === "generated") return "Gerado";
+  if (kind === "modified") return "Alterado";
+  if (kind === "uploaded") return "Enviado";
+  if (kind === "referenced") return "Contexto";
+  return "Trabalhado";
+}
+
+function currentTimeMs() {
+  return Date.now();
+}
+
 export default function Home() {
   const clientRef = useRef<CodexAppClient | null>(null);
   const activeThreadRef = useRef("");
+  const activeCwdRef = useRef("");
   const pendingTitleRef = useRef("");
+  const workspaceWatchIdRef = useRef("");
+  const turnStartedAtRef = useRef(0);
+  const currentAssistantMessageIdRef = useRef("");
+  const artifactPathsRef = useRef(new Set<string>());
+  const artifactListRef = useRef<ArtifactFile[]>([]);
+  const turnArtifactPathsRef = useRef(new Set<string>());
+  const changedPathTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const previewUrlRef = useRef("");
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [engine, setEngine] = useState<"connecting" | "codex" | "responses" | "offline">("connecting");
@@ -96,7 +171,7 @@ export default function Home() {
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<"activity" | "files" | "terminal">("activity");
+  const [activeTab, setActiveTab] = useState<"activity" | "files" | "terminal" | "preview">("activity");
   const [menu, setMenu] = useState<"slash" | "files" | "skills" | "settings" | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<Skill[]>([]);
@@ -109,9 +184,17 @@ export default function Home() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [account, setAccount] = useState("Conta local");
   const [manualOpen, setManualOpen] = useState(false);
+  const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
+  const [artifactBusy, setArtifactBusy] = useState("");
+  const [preview, setPreview] = useState<ArtifactPreview | null>(null);
 
   useEffect(() => { activeThreadRef.current = threadId; }, [threadId]);
+  useEffect(() => { activeCwdRef.current = cwd; }, [cwd]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, busy]);
+  useEffect(() => () => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    changedPathTimersRef.current.forEach((timer) => clearTimeout(timer));
+  }, []);
   useEffect(() => {
     if (!manualOpen) return;
     const previousOverflow = document.body.style.overflow;
@@ -124,43 +207,236 @@ export default function Home() {
     };
   }, [manualOpen]);
 
-  useEffect(() => {
-    const client = new CodexAppClient();
-    clientRef.current = client;
-    const unsubscribe = client.onMessage(handleCodexMessage);
-    let disposed = false;
+  function resetArtifacts() {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = "";
+    artifactPathsRef.current.clear();
+    artifactListRef.current = [];
+    turnArtifactPathsRef.current.clear();
+    setArtifacts([]);
+    setPreview(null);
+    setArtifactBusy("");
+  }
 
-    (async () => {
-      try {
-        await client.connect();
-        if (disposed) return;
-        setEngine("codex");
-        const [accountResult, modelResult, skillResult] = await Promise.all([
-          client.request<{ account: { type: string; planType?: string; email?: string } | null }>("account/read", {}),
-          client.request<{ data: Model[] }>("model/list", { limit: 20 }),
-          client.request<{ data: Array<{ skills: Skill[] }> }>("skills/list", {}),
-        ]);
-        if (disposed) return;
-        setModels(modelResult.data || []);
-        setModel(modelResult.data?.find((entry) => entry.isDefault)?.model || modelResult.data?.[0]?.model || "");
-        setSkills((skillResult.data || []).flatMap((entry) => entry.skills || []).filter((skill) => skill.enabled));
-        const currentAccount = accountResult.account;
-        setAccount(currentAccount?.type === "chatgpt" ? `ChatGPT ${currentAccount.planType || ""}`.trim() : currentAccount?.type || "Conta local");
-        await createCodexThread(client);
-        await refreshThreads(client);
-      } catch {
-        if (disposed) return;
-        await startResponsesFallback();
+  function rememberArtifact(artifact: ArtifactFile, trackTurn = true) {
+    const key = artifactPathKey(artifact.path);
+    artifactPathsRef.current.add(key);
+    if (trackTurn) turnArtifactPathsRef.current.add(key);
+    setArtifacts((current) => {
+      const existing = current.find((entry) => artifactPathKey(entry.path) === key);
+      if (!existing) {
+        const next = [artifact, ...current];
+        artifactListRef.current = next;
+        return next;
       }
-    })();
+      const importantKind = ["generated", "modified"].includes(artifact.kind) ? artifact.kind : existing.kind;
+      const next = current.map((entry) => artifactPathKey(entry.path) === key ? {
+        ...entry,
+        ...artifact,
+        kind: importantKind,
+        sourceMessageId: artifact.sourceMessageId || entry.sourceMessageId,
+        size: artifact.size || entry.size,
+      } : entry);
+      artifactListRef.current = next;
+      return next;
+    });
+    return artifact;
+  }
 
-    return () => {
-      disposed = true;
-      unsubscribe();
-      client.disconnect();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  function forgetArtifactPath(rawPath: string) {
+    const workspace = activeCwdRef.current;
+    const path = resolveAgentPath(workspace, rawPath);
+    const key = artifactPathKey(path);
+    artifactPathsRef.current.delete(key);
+    turnArtifactPathsRef.current.delete(key);
+    setArtifacts((current) => {
+      const next = current.filter((entry) => artifactPathKey(entry.path) !== key);
+      artifactListRef.current = next;
+      return next;
+    });
+  }
+
+  async function registerArtifactPath(rawPath: string, kind: ArtifactKind, sourceMessageId?: string, trackTurn = true) {
+    const client = clientRef.current;
+    const workspace = activeCwdRef.current;
+    if (!client?.connected || !workspace || !rawPath) return null;
+    const path = resolveAgentPath(workspace, rawPath);
+    if (!isPathInsideWorkspace(path, workspace) || shouldIgnoreArtifactPath(path)) return null;
+    try {
+      const metadata = await client.request<{ isDirectory: boolean; isFile: boolean; modifiedAtMs: number }>("fs/getMetadata", { path });
+      if (!metadata.isFile || metadata.isDirectory) return null;
+      const artifact = {
+        id: artifactPathKey(path),
+        name: artifactFileName(path),
+        path,
+        mime: artifactMimeType(path),
+        kind: kind === "worked" && isOutputArtifact(path) ? "generated" : kind,
+        modifiedAtMs: metadata.modifiedAtMs,
+        sourceMessageId,
+      } satisfies ArtifactFile;
+      return rememberArtifact(artifact, trackTurn);
+    } catch {
+      if (artifactPathsRef.current.has(artifactPathKey(path))) forgetArtifactPath(path);
+      return null;
+    }
+  }
+
+  function scheduleArtifactPath(rawPath: string, kind: ArtifactKind = "worked", sourceMessageId = currentAssistantMessageIdRef.current) {
+    const workspace = activeCwdRef.current;
+    if (!workspace || !rawPath) return;
+    const path = resolveAgentPath(workspace, rawPath);
+    const key = artifactPathKey(path);
+    const previous = changedPathTimersRef.current.get(key);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      changedPathTimersRef.current.delete(key);
+      void registerArtifactPath(path, artifactPathsRef.current.has(key) ? "modified" : kind, sourceMessageId);
+    }, 450);
+    changedPathTimersRef.current.set(key, timer);
+  }
+
+  async function discoverArtifactsFromText(text: string, sourceMessageId: string, trackTurn = true) {
+    const discovered: ArtifactFile[] = [];
+    for (const candidate of extractArtifactCandidates(text)) {
+      const artifact = await registerArtifactPath(candidate.path, "generated", sourceMessageId, trackTurn);
+      if (artifact) discovered.push(artifact);
+    }
+    return discovered;
+  }
+
+  async function watchWorkspace(client: CodexAppClient, workspace: string, nextThreadId: string) {
+    const previousWatch = workspaceWatchIdRef.current;
+    if (previousWatch) await client.request("fs/unwatch", { watchId: previousWatch }).catch(() => undefined);
+    const watchId = `indev-${nextThreadId}`;
+    workspaceWatchIdRef.current = watchId;
+    await client.request("fs/watch", { watchId, path: workspace }).catch(() => { workspaceWatchIdRef.current = ""; });
+  }
+
+  async function scanWorkspaceArtifacts(sinceMs = 0, outputsOnly = false) {
+    const client = clientRef.current;
+    const workspace = activeCwdRef.current;
+    if (!client?.connected || !workspace) return [];
+    const queue: Array<{ path: string; depth: number }> = [{ path: workspace, depth: 0 }];
+    const discovered: ArtifactFile[] = [];
+    let visited = 0;
+    const skippedDirectories = new Set([".git", "node_modules", ".next", "dist", ".wrangler", "codex-home"]);
+    const outputDirectories = new Set([".indev", "output", "outputs", "results", "resultados", "report", "reports", "relatorio", "relatorios"]);
+    while (queue.length && visited < 260) {
+      const directory = queue.shift();
+      if (!directory) break;
+      let entries: FileEntry[] = [];
+      try {
+        const result = await client.request<{ entries: FileEntry[] }>("fs/readDirectory", { path: directory.path });
+        entries = result.entries || [];
+      } catch { continue; }
+      for (const entry of entries) {
+        if (visited >= 260) break;
+        visited += 1;
+        const path = joinAgentPath(directory.path, entry.fileName);
+        if (entry.isDirectory) {
+          const allowedOutputDirectory = !outputsOnly || directory.depth > 0 || outputDirectories.has(entry.fileName.toLowerCase());
+          if (directory.depth < 2 && allowedOutputDirectory && !skippedDirectories.has(entry.fileName) && !shouldIgnoreArtifactPath(`${path}/`)) queue.push({ path, depth: directory.depth + 1 });
+          continue;
+        }
+        if (!entry.isFile || shouldIgnoreArtifactPath(path) || (outputsOnly && !isDeliverableArtifact(path))) continue;
+        try {
+          const metadata = await client.request<{ isFile: boolean; isDirectory: boolean; modifiedAtMs: number }>("fs/getMetadata", { path });
+          if (!metadata.isFile || metadata.modifiedAtMs < sinceMs) continue;
+          const scanKind: ArtifactKind = /[\\/]\.indev[\\/]uploads[\\/]/.test(path) ? "uploaded" : isOutputArtifact(path) ? "generated" : "worked";
+          const artifact = await registerArtifactPath(path, scanKind, currentAssistantMessageIdRef.current);
+          if (artifact) discovered.push(artifact);
+        } catch { /* arquivo pode ter sido movido durante a varredura */ }
+      }
+    }
+    return discovered;
+  }
+
+  async function finalizeTurnArtifacts() {
+    const scanned = await scanWorkspaceArtifacts(Math.max(0, turnStartedAtRef.current - 1_500));
+    const turnKeys = turnArtifactPathsRef.current;
+    const current = artifactListRef.current.filter((artifact) => turnKeys.has(artifactPathKey(artifact.path)));
+    const combined = [...scanned, ...current].filter((artifact, index, list) => list.findIndex((entry) => artifactPathKey(entry.path) === artifactPathKey(artifact.path)) === index);
+    const html = combined.find((artifact) => artifactPreviewKind(artifact.path) === "html");
+    if (html) await openArtifact(html);
+    else if (combined.length) setActiveTab("files");
+  }
+
+  async function refreshWorkspaceResults() {
+    setArtifactBusy("refresh");
+    const discovered = await scanWorkspaceArtifacts(0, true);
+    setArtifactBusy("");
+    if (discovered.length) setActiveTab("files");
+    else setError("Nenhum relatório, planilha, imagem, documento ou ZIP foi encontrado na área da tarefa.");
+  }
+
+  async function readArtifact(artifact: ArtifactFile) {
+    const client = clientRef.current;
+    if (!client?.connected) throw new Error("O motor local não está conectado.");
+    if (!isPathInsideWorkspace(artifact.path, activeCwdRef.current)) throw new Error("O arquivo está fora da área permitida desta tarefa.");
+    const result = await client.request<{ dataBase64: string }>("fs/readFile", { path: artifact.path }, 60_000);
+    const blob = base64Blob(result.dataBase64, artifact.mime);
+    rememberArtifact({ ...artifact, size: blob.size }, false);
+    return blob;
+  }
+
+  async function openArtifact(artifact: ArtifactFile) {
+    const kind = artifactPreviewKind(artifact.path);
+    if (!kind) { await downloadArtifact(artifact); return; }
+    setArtifactBusy(artifact.path); setError("");
+    try {
+      const blob = await readArtifact(artifact);
+      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = "";
+      if (kind === "text") {
+        setPreview({ artifact: { ...artifact, size: blob.size }, kind, text: await blob.text() });
+      } else {
+        const url = URL.createObjectURL(blob);
+        previewUrlRef.current = url;
+        setPreview({ artifact: { ...artifact, size: blob.size }, kind, url });
+      }
+      setActiveTab("preview");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível abrir o resultado."); }
+    finally { setArtifactBusy(""); }
+  }
+
+  async function downloadArtifact(artifact: ArtifactFile) {
+    setArtifactBusy(artifact.path); setError("");
+    try {
+      const blob = await readArtifact(artifact);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = artifact.name; anchor.style.display = "none";
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2_000);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível baixar o arquivo."); }
+    finally { setArtifactBusy(""); }
+  }
+
+  function closePreview() {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = "";
+    setPreview(null);
+    setActiveTab("files");
+  }
+
+  async function hydrateArtifacts(turns: ThreadStartResponse["thread"]["turns"] = []) {
+    for (const turn of turns) {
+      for (const item of turn.items || []) {
+        if (item.type === "fileChange") {
+          for (const change of (item.changes as FileUpdateChange[] | undefined) || []) {
+            const kindType = typeof change.kind === "string" ? change.kind : change.kind?.type;
+            if (kindType !== "delete") await registerArtifactPath(change.path, kindType === "add" ? "generated" : "modified", undefined, false);
+          }
+        }
+        if (item.type === "agentMessage" && item.text) await discoverArtifactsFromText(String(item.text), String(item.id), false);
+        if (item.type === "userMessage") {
+          for (const part of (item.content as Array<{ type?: string; path?: string; name?: string }> | undefined) || []) {
+            if (part.path) await registerArtifactPath(part.path, part.path.includes(".indev") ? "uploaded" : "referenced", undefined, false);
+          }
+        }
+      }
+    }
+  }
 
   function handleCodexMessage(message: CodexEnvelope) {
     const method = message.method || "";
@@ -192,6 +468,7 @@ export default function Home() {
     if (method === "item/started") {
       const item = (params.item || {}) as Record<string, unknown>;
       if (item.type === "agentMessage") {
+        currentAssistantMessageIdRef.current = String(item.id);
         setMessages((current) => current.some((entry) => entry.id === String(item.id)) ? current : [...current, { id: String(item.id), role: "assistant", content: "", streaming: true }]);
         return;
       }
@@ -203,14 +480,29 @@ export default function Home() {
     if (method === "item/completed") {
       const item = (params.item || {}) as Record<string, unknown>;
       if (item.type === "agentMessage") {
-        setMessages((current) => current.map((entry) => entry.id === String(item.id) ? { ...entry, content: String(item.text || entry.content), streaming: false } : entry));
+        const messageId = String(item.id);
+        const text = String(item.text || "");
+        currentAssistantMessageIdRef.current = messageId;
+        setMessages((current) => current.map((entry) => entry.id === messageId ? { ...entry, content: text || entry.content, streaming: false } : entry));
+        if (text) void discoverArtifactsFromText(text, messageId);
       } else {
         setEvents((current) => current.map((entry) => entry.id === String(item.id) ? { ...entry, status: String(item.status || "completed"), detail: item.type === "commandExecution" ? String(item.aggregatedOutput || entry.detail) : entry.detail } : entry));
         if (item.type === "commandExecution" && item.aggregatedOutput) {
           const commandOutput = String(item.aggregatedOutput);
           setTerminal((current) => current.endsWith(commandOutput) ? current : `${current}${current ? "\n" : ""}${commandOutput}`);
         }
+        if (item.type === "fileChange") {
+          for (const change of (item.changes as FileUpdateChange[] | undefined) || []) {
+            const kindType = typeof change.kind === "string" ? change.kind : change.kind?.type;
+            if (kindType === "delete") forgetArtifactPath(change.path);
+            else scheduleArtifactPath(change.path, kindType === "add" ? "generated" : "modified");
+          }
+        }
       }
+      return;
+    }
+    if (method === "fs/changed") {
+      for (const path of (params.changedPaths as string[] | undefined) || []) scheduleArtifactPath(path);
       return;
     }
     if (method === "item/commandExecution/outputDelta") {
@@ -219,6 +511,11 @@ export default function Home() {
     }
     if (method === "turn/plan/updated") { setPlan((params.plan as PlanStep[]) || []); return; }
     if (method === "turn/diff/updated") { setDiff(String(params.diff || "")); return; }
+    if (method === "turn/started") {
+      turnStartedAtRef.current = currentTimeMs();
+      turnArtifactPathsRef.current.clear();
+      return;
+    }
     if (method === "turn/completed") {
       const turn = (params.turn || {}) as { status?: string; error?: { message?: string } };
       setBusy(false);
@@ -229,6 +526,7 @@ export default function Home() {
       if (pendingTitle && clientRef.current?.connected) {
         void clientRef.current.request("thread/name/set", { threadId: activeThreadRef.current, name: pendingTitle }).then(() => refreshThreads()).catch(() => refreshThreads());
       } else void refreshThreads(clientRef.current);
+      if (turn.status === "completed") void finalizeTurnArtifacts();
       return;
     }
     if (method === "error" || method === "warning" || method === "guardianWarning") {
@@ -239,20 +537,23 @@ export default function Home() {
 
   async function createCodexThread(client = clientRef.current) {
     if (!client?.connected) return;
-    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]);
+    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); resetArtifacts(); setActiveTab("activity");
     const response = await client.request<ThreadStartResponse>("thread/start", {
       model: model || undefined,
       approvalPolicy: "on-request",
       sandbox,
       threadSource: "indev",
-      developerInstructions: "Você é o InDev, um agente de desenvolvimento local. Responda em português quando o usuário falar português. Use tools com segurança, mantenha o usuário informado e nunca alegue uma execução que não ocorreu.",
+      developerInstructions: "Você é o InDev, um agente de desenvolvimento local. Responda em português quando o usuário falar português. Use tools com segurança, mantenha o usuário informado e nunca alegue uma execução que não ocorreu. Salve todo relatório, pacote ZIP e outro entregável dentro da área de trabalho da tarefa. Ao finalizar, mencione o caminho absoluto de cada arquivo criado para que a interface do InDev o transforme em prévia e download.",
     });
     activeThreadRef.current = response.thread.id;
-    setThreadId(response.thread.id); setCwd(response.cwd || response.thread.cwd); setModel(response.model); setStatus("Pronto");
+    const workspace = response.cwd || response.thread.cwd;
+    activeCwdRef.current = workspace;
+    setThreadId(response.thread.id); setCwd(workspace); setModel(response.model); setStatus("Pronto");
+    await watchWorkspace(client, workspace, response.thread.id);
   }
 
   async function startResponsesFallback() {
-    setEngine("responses"); setStatus("Conectando pela API OpenAI");
+    resetArtifacts(); setEngine("responses"); setStatus("Conectando pela API OpenAI");
     try {
       const response = await fetch("/api/threads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Nova tarefa InDev" }) });
       const data = await response.json();
@@ -274,11 +575,14 @@ export default function Home() {
   async function resumeThread(id: string) {
     const client = clientRef.current;
     if (!client?.connected || id === threadId || busy) return;
-    setStatus("Abrindo tarefa"); setError("");
+    setStatus("Abrindo tarefa"); setError(""); resetArtifacts(); setActiveTab("activity");
     try {
       const response = await client.request<ThreadStartResponse>("thread/resume", { threadId: id, approvalPolicy: "on-request", sandbox });
-      activeThreadRef.current = response.thread.id; setThreadId(response.thread.id); setCwd(response.cwd || response.thread.cwd); setModel(response.model);
+      const workspace = response.cwd || response.thread.cwd;
+      activeThreadRef.current = response.thread.id; activeCwdRef.current = workspace; setThreadId(response.thread.id); setCwd(workspace); setModel(response.model);
       setMessages(messagesFromTurns(response.thread.turns)); setEvents([]); setPlan([]); setTerminal(""); setDiff(""); setStatus("Pronto");
+      await watchWorkspace(client, workspace, response.thread.id);
+      await hydrateArtifacts(response.thread.turns);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível abrir a tarefa."); setStatus("Aguardando"); }
   }
 
@@ -288,7 +592,10 @@ export default function Home() {
     if (!content || !threadId || busy) return;
     if (content.startsWith("/") && await runSlashCommand(content)) return;
     setInput(""); setError(""); setStatus("Codex está pensando"); setBusy(true); setMenu(null);
-    const localId = `local-${Date.now()}`;
+    turnStartedAtRef.current = currentTimeMs();
+    turnArtifactPathsRef.current.clear();
+    currentAssistantMessageIdRef.current = "";
+    const localId = `local-${crypto.randomUUID()}`;
     setMessages((current) => [...current, { id: localId, role: "user", content }]);
 
     if (engine === "codex" && clientRef.current?.connected) {
@@ -367,7 +674,7 @@ export default function Home() {
       if (engine === "codex" && clientRef.current?.connected && cwd) {
         const safeName = selected.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const uploadDir = joinAgentPath(cwd, ".indev", "uploads");
-        const path = joinAgentPath(uploadDir, `${Date.now()}-${safeName}`);
+        const path = joinAgentPath(uploadDir, `${crypto.randomUUID()}-${safeName}`);
         await clientRef.current.request("fs/createDirectory", { path: uploadDir, recursive: true });
         await clientRef.current.request("fs/writeFile", { path, dataBase64: await fileAsBase64(selected) }, 60_000);
         let contextPath: string | undefined;
@@ -376,7 +683,7 @@ export default function Home() {
           const contextFile = new File([spreadsheet.text], `${safeName}.indev-context.txt`, { type: "text/plain" });
           await clientRef.current.request("fs/writeFile", { path: contextPath, dataBase64: await fileAsBase64(contextFile) }, 60_000);
         }
-        setFiles((current) => [...current, {
+        const uploadedArtifact = {
           id: crypto.randomUUID(),
           name: selected.name,
           size: selected.size,
@@ -385,7 +692,9 @@ export default function Home() {
           contextPath,
           contextPreview: spreadsheet?.preview,
           spreadsheetSummary: spreadsheet?.summary,
-        }]);
+        };
+        setFiles((current) => [...current, uploadedArtifact]);
+        rememberArtifact({ id: artifactPathKey(path), name: selected.name, path, mime: selected.type || artifactMimeType(path), kind: "uploaded", size: selected.size }, false);
       } else {
         const form = new FormData(); form.append("file", selected);
         const response = await fetch(`/api/threads/${threadId}/files`, { method: "POST", body: form });
@@ -414,6 +723,7 @@ export default function Home() {
   function addContextFile(entry: FileEntry) {
     const path = joinAgentPath(cwd, entry.fileName);
     setContextFiles((current) => current.some((file) => file.path === path) ? current : [...current, { id: crypto.randomUUID(), name: entry.fileName, size: 0, type: entry.isDirectory ? "inode/directory" : "text/plain", path }]);
+    if (entry.isFile) rememberArtifact({ id: artifactPathKey(path), name: entry.fileName, path, mime: artifactMimeType(path), kind: "referenced" }, false);
     setMenu(null);
   }
 
@@ -427,10 +737,66 @@ export default function Home() {
     setStatus(decision === "accept" ? "Aprovado — executando" : "Ação recusada");
   }
 
+  function renderArtifactCard(artifact: ArtifactFile) {
+    const previewKind = artifactPreviewKind(artifact.path);
+    const isZip = artifact.name.toLowerCase().endsWith(".zip");
+    const busyArtifact = artifactBusy === artifact.path;
+    return <div className={`artifact-card ${preview?.artifact.path === artifact.path ? "selected" : ""}`} key={artifact.path}>
+      <button className="artifact-main" type="button" onClick={() => void (previewKind ? openArtifact(artifact) : downloadArtifact(artifact))} disabled={busyArtifact}>
+        <span className={`artifact-icon ${previewKind || (isZip ? "zip" : "file")}`}>{previewKind === "html" ? "◫" : previewKind === "image" ? "▧" : previewKind === "pdf" ? "PDF" : previewKind === "text" ? "≡" : isZip ? "ZIP" : "▤"}</span>
+        <span><strong>{artifact.name}</strong><small>{artifactKindLabel(artifact.kind)} · {fileSizeLabel(artifact.size)}</small></span>
+      </button>
+      <div className="artifact-actions">
+        {previewKind && <button type="button" onClick={() => void openArtifact(artifact)} disabled={busyArtifact}>Abrir</button>}
+        <button type="button" onClick={() => void downloadArtifact(artifact)} disabled={busyArtifact}>{busyArtifact ? "Lendo…" : isZip ? "Baixar ZIP" : "Baixar"}</button>
+      </div>
+    </div>;
+  }
+
+  useEffect(() => {
+    const client = new CodexAppClient();
+    clientRef.current = client;
+    const unsubscribe = client.onMessage(handleCodexMessage);
+    let disposed = false;
+
+    (async () => {
+      try {
+        await client.connect();
+        if (disposed) return;
+        setEngine("codex");
+        const [accountResult, modelResult, skillResult] = await Promise.all([
+          client.request<{ account: { type: string; planType?: string; email?: string } | null }>("account/read", {}),
+          client.request<{ data: Model[] }>("model/list", { limit: 20 }),
+          client.request<{ data: Array<{ skills: Skill[] }> }>("skills/list", {}),
+        ]);
+        if (disposed) return;
+        setModels(modelResult.data || []);
+        setModel(modelResult.data?.find((entry) => entry.isDefault)?.model || modelResult.data?.[0]?.model || "");
+        setSkills((skillResult.data || []).flatMap((entry) => entry.skills || []).filter((skill) => skill.enabled));
+        const currentAccount = accountResult.account;
+        setAccount(currentAccount?.type === "chatgpt" ? `ChatGPT ${currentAccount.planType || ""}`.trim() : currentAccount?.type || "Conta local");
+        await createCodexThread(client);
+        await refreshThreads(client);
+      } catch {
+        if (disposed) return;
+        await startResponsesFallback();
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      client.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const allAttachments = useMemo(() => [...files, ...contextFiles], [files, contextFiles]);
+  const resultArtifacts = useMemo(() => artifacts.filter((artifact) => ["generated", "modified", "worked"].includes(artifact.kind)), [artifacts]);
+  const usedArtifacts = useMemo(() => artifacts.filter((artifact) => ["uploaded", "referenced"].includes(artifact.kind)), [artifacts]);
   const title = messages.find((message) => message.role === "user")?.content.slice(0, 48) || "Nova tarefa InDev";
 
-  return <main className="app-shell">
+  return <main className={`app-shell ${activeTab === "preview" && preview ? "result-view" : ""}`}>
     <aside className="sidebar">
       <div className="logo"><span>i</span> InDev <em>BETA</em></div>
       <button className="new" onClick={() => engine === "codex" ? createCodexThread() : startResponsesFallback()}>＋ Nova tarefa</button>
@@ -455,7 +821,10 @@ export default function Home() {
 
       <div className="chat">
         {messages.length === 0 && <div className="welcome"><span>i</span><h2>O que vamos construir?</h2><p>{engine === "codex" ? "Tools, sandbox, terminal, arquivos, skills e memória estão conectados." : "Conectando ao motor local do InDev…"}</p></div>}
-        {messages.map((message) => <article className={`message ${message.role}`} key={message.id}><b>{message.role === "user" ? "V" : "i"}</b><div>{message.content}{message.streaming && <span className="cursor">▋</span>}</div></article>)}
+        {messages.map((message) => {
+          const relatedArtifacts = artifacts.filter((artifact) => artifact.sourceMessageId === message.id);
+          return <article className={`message ${message.role}`} key={message.id}><b>{message.role === "user" ? "V" : "i"}</b><div>{message.role === "assistant" ? messageWithoutLocalPaths(message.content) : message.content}{message.streaming && <span className="cursor">▋</span>}{relatedArtifacts.length > 0 && <div className="message-results">{relatedArtifacts.map((artifact) => <button type="button" key={artifact.path} onClick={() => void openArtifact(artifact)}><span>{artifactPreviewKind(artifact.path) === "html" ? "◫" : artifact.name.toLowerCase().endsWith(".zip") ? "ZIP" : "▤"}</span><div><strong>{artifact.name}</strong><small>{artifactKindLabel(artifact.kind)} · {artifactPreviewKind(artifact.path) ? "abrir resultado" : "baixar arquivo"}</small></div><em>→</em></button>)}</div>}</div></article>;
+        })}
         {busy && !messages.some((message) => message.streaming) && <div className="thinking"><span></span><span></span><span></span> Codex está trabalhando…</div>}
         {approvals.map((approval) => <div className="approval-card" key={approval.id}><strong>Confirmação necessária</strong><p>{String(approval.params.reason || approval.params.command || (approval.method.includes("fileChange") ? "Alterar arquivos fora da área permitida" : "Executar uma ação protegida"))}</p><div><button onClick={() => answerApproval(approval, "decline")}>Recusar</button><button className="approve" onClick={() => answerApproval(approval, "accept")}>Aprovar uma vez</button></div></div>)}
         {error && <div className="error">{error}</div>}
@@ -484,17 +853,35 @@ export default function Home() {
     </section>
 
     <aside className="activity">
-      <nav><button className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Atividade</button><button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>Arquivos</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>Terminal</button></nav>
+      <nav><button className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Atividade</button><button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>Arquivos{artifacts.length > 0 && <span>{artifacts.length}</span>}</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>Terminal</button>{preview && <button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}>Resultado</button>}</nav>
       <div className="activity-body">
-        <label>● {status.toUpperCase()}</label>
+        {activeTab !== "preview" && <label>● {status.toUpperCase()}</label>}
         {activeTab === "activity" && <>
           <h2>Plano</h2>{plan.length ? plan.map((step, index) => <p key={`${step.step}-${index}`} className={step.status}>◌ {step.step}</p>) : <p className="muted">O plano aparecerá quando a tarefa exigir várias etapas.</p>}
           <h2>Execuções</h2>{events.length ? events.map((entry) => <div className="event-card" key={entry.id}><span className={entry.status}></span><div><b>{entry.title}</b><small>{entry.detail || entry.status}</small></div></div>) : <p className="muted">Tools e comandos aparecerão aqui em tempo real.</p>}
           {diff && <><h2>Últimas alterações</h2><pre className="diff-preview">{diff.slice(-2400)}</pre></>}
         </>}
-        {activeTab === "files" && <><h2>Contexto desta mensagem</h2>{allAttachments.length ? allAttachments.map((file) => <div className="backend-card file-card" key={file.id}><b>{file.name}</b><span>{file.path || `${Math.max(1, Math.round(file.size / 1024))} KB`}</span></div>) : <p className="muted">Use + para subir um arquivo ou @ para selecionar algo do projeto.</p>}<h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split(/[\\/]/).pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div></>}
+        {activeTab === "files" && <>
+          <div className="files-heading"><div><h2>Resultados da tarefa</h2><p>Relatórios, documentos, arquivos alterados e pacotes ficam disponíveis aqui.</p></div><button type="button" onClick={() => void refreshWorkspaceResults()} disabled={artifactBusy === "refresh"}>{artifactBusy === "refresh" ? "Buscando…" : "↻ Atualizar"}</button></div>
+          {resultArtifacts.length ? <div className="artifact-list">{resultArtifacts.map(renderArtifactCard)}</div> : <div className="empty-results"><span>◫</span><strong>Nenhum resultado ainda</strong><p>Quando o InDev criar um HTML, PDF, planilha, imagem ou ZIP, ele aparecerá automaticamente aqui.</p></div>}
+          <h2>Arquivos usados</h2>
+          {usedArtifacts.length ? <div className="artifact-list compact">{usedArtifacts.map(renderArtifactCard)}</div> : <p className="muted">Use + para subir um arquivo ou @ para selecionar algo do projeto.</p>}
+          <h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split(/[\\/]/).pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div>
+        </>}
         {activeTab === "terminal" && <><h2>Saída do terminal</h2><pre className="terminal-output">{terminal || "Nenhum comando executado nesta tarefa."}</pre></>}
-        <h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "Responses API" : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${sandbox}` : "Reserva segura"}</span></div>
+        {activeTab === "preview" && preview && <section className="artifact-preview" aria-label={`Prévia de ${preview.artifact.name}`}>
+          <header><div><span>RESULTADO</span><h2>{preview.artifact.name}</h2><p>{fileSizeLabel(preview.artifact.size)} · prévia local protegida</p></div><div><button type="button" onClick={() => void downloadArtifact(preview.artifact)}>↓ Baixar</button><button type="button" className="preview-close" aria-label="Fechar prévia" onClick={closePreview}>×</button></div></header>
+          <div className={`preview-surface ${preview.kind}`}>
+            {preview.kind === "html" && preview.url && <iframe title={`Resultado ${preview.artifact.name}`} src={preview.url} sandbox="allow-scripts allow-forms allow-modals allow-downloads" referrerPolicy="no-referrer" />}
+            {preview.kind === "image" && preview.url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={preview.url} alt={preview.artifact.name} />
+            )}
+            {preview.kind === "pdf" && preview.url && <iframe title={`PDF ${preview.artifact.name}`} src={preview.url} referrerPolicy="no-referrer" />}
+            {preview.kind === "text" && <pre>{preview.text}</pre>}
+          </div>
+        </section>}
+        {activeTab !== "preview" && <><h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "Responses API" : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${sandbox}` : "Reserva segura"}</span></div></>}
       </div>
     </aside>
 
@@ -567,6 +954,8 @@ export default function Home() {
                 <article><span>▤</span><div><strong>Planilhas .xlsx</strong><p>O original é preservado e o InDev extrai planilhas, linhas e células para um texto legível pelo agente. Para <code>.xls</code> antigo, salve antes como <code>.xlsx</code>.</p></div></article>
                 <article><span>@</span><div><strong>Contexto do projeto</strong><p>Selecione arquivos que já estão no repositório. O caminho absoluto é enviado ao agente para leitura e processamento.</p></div></article>
                 <article><span>×</span><div><strong>Remover antes de enviar</strong><p>Clique no anexo laranja para tirá-lo da próxima mensagem. Isso não apaga o arquivo original do seu computador.</p></div></article>
+                <article><span>◫</span><div><strong>Resultados renderizados</strong><p>HTML, imagens, PDF e texto abrem dentro do painel Resultado. Planilhas, documentos e ZIP ficam disponíveis para download em Arquivos.</p></div></article>
+                <article><span>↓</span><div><strong>Sem caminhos quebrados</strong><p>Quando o agente menciona um arquivo local, o InDev transforma o caminho em um cartão para abrir ou baixar.</p></div></article>
               </div>
             </section>
 
@@ -605,7 +994,7 @@ export default function Home() {
                 <article><strong>Excel não foi lido</strong><p>Use <code>.xlsx</code>, confirme o resumo mostrado no anexo e diga claramente quais abas ou colunas devem ser analisadas.</p></article>
                 <article><strong>A tarefa está longa</strong><p>Use <code>/compact</code> para resumir o histórico e manter os pontos importantes no contexto.</p></article>
               </div>
-              <aside className="manual-available"><div><span>O QUE FUNCIONA HOJE</span><p>Chat em streaming, modelos, histórico de tarefas, uploads e Excel, arquivos do projeto, skills, cinco comandos, sandbox, aprovações, plano, tools, terminal e diff.</p></div><div><span>AINDA NÃO TEM INTERFACE PRÓPRIA</span><p>Loja de plugins, cadastro visual de MCP/tools, execução em nuvem e todos os comandos existentes no Codex original.</p></div></aside>
+              <aside className="manual-available"><div><span>O QUE FUNCIONA HOJE</span><p>Chat em streaming, modelos, histórico, uploads e Excel, arquivos do projeto, prévia HTML/PDF/imagens/texto, downloads e ZIP, skills, comandos, sandbox, aprovações, plano, tools, terminal e diff.</p></div><div><span>AINDA NÃO TEM INTERFACE PRÓPRIA</span><p>Loja de plugins, cadastro visual de MCP/tools, execução em nuvem e todos os comandos existentes no Codex original.</p></div></aside>
             </section>
           </div>
         </div>

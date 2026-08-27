@@ -61,7 +61,7 @@ function start(command, args, cwd, label) {
 
 let web;
 try {
-  for (const [label, port] of [["site", runtime.webPort], ["App Server", runtime.appServerPort], ["ponte", runtime.bridgePort]]) {
+  for (const [label, port] of [["interface", runtime.webPort], ["App Server", runtime.appServerPort], ["ponte", runtime.bridgePort]]) {
     if (!await portIsAvailable(port)) {
       throw new Error(`A porta ${port} do ${label} já está em uso. Feche a outra execução do InDev e tente novamente.`);
     }
