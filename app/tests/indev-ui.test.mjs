@@ -68,6 +68,10 @@ test("resultados locais viram prévia e download dentro do InDev", async () => {
   assert.match(page, /"uploads", safeThreadId/);
   assert.match(page, /"thread\/read"/);
   assert.match(page, /if \(turnActiveRef\.current\)/);
+  assert.match(page, /"turn\/interrupt", \{ threadId, turnId \}/);
+  assert.match(page, /activeTurnIdRef/);
+  assert.match(page, /Preparando a resposta/);
+  assert.match(page, /className={`plan-step/);
   assert.match(page, /sandbox="allow-scripts allow-forms allow-modals allow-downloads"/);
   assert.match(artifacts, /messageWithoutLocalPaths/);
   assert.match(artifacts, /isPathInsideWorkspace/);

@@ -34,7 +34,9 @@ type WorkspaceFile = {
   spreadsheetSummary?: string;
 };
 type ActivityEvent = { id: string; kind: string; title: string; detail: string; status: string };
-type PlanStep = { step: string; status: string };
+type StepStatus = "pending" | "inProgress" | "completed";
+type PlanStep = { step: string; status: StepStatus };
+type LiveStep = PlanStep & { id: string };
 type Skill = { name: string; description: string; path: string; enabled: boolean };
 type Model = { id: string; model: string; displayName: string; isDefault?: boolean };
 type ThreadSummary = { id: string; preview: string; name?: string | null; updatedAt?: number };
@@ -154,6 +156,7 @@ export default function Home() {
   const workspaceWatchIdRef = useRef("");
   const turnStartedAtRef = useRef(0);
   const turnActiveRef = useRef(false);
+  const activeTurnIdRef = useRef("");
   const currentAssistantMessageIdRef = useRef("");
   const artifactPathsRef = useRef(new Set<string>());
   const artifactListRef = useRef<ArtifactFile[]>([]);
@@ -168,6 +171,7 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [plan, setPlan] = useState<PlanStep[]>([]);
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
   const [terminal, setTerminal] = useState("");
   const [diff, setDiff] = useState("");
   const [input, setInput] = useState("");
@@ -220,10 +224,24 @@ export default function Home() {
     artifactListRef.current = [];
     turnArtifactPathsRef.current.clear();
     turnActiveRef.current = false;
+    activeTurnIdRef.current = "";
     setArtifacts([]);
     setPreview(null);
     setArtifactBusy("");
     setWorkersOpen(false);
+  }
+
+  function startLiveStep(id: string, step: string, finishRunning = false) {
+    setLiveSteps((current) => {
+      const prepared = finishRunning ? current.map((entry) => entry.status === "inProgress" ? { ...entry, status: "completed" as const } : entry) : current;
+      const existing = prepared.find((entry) => entry.id === id);
+      if (existing) return prepared.map((entry) => entry.id === id ? { ...entry, step, status: "inProgress" } : entry);
+      return [...prepared, { id, step, status: "inProgress" }].slice(-8);
+    });
+  }
+
+  function completeLiveStep(id: string) {
+    setLiveSteps((current) => current.map((entry) => entry.id === id ? { ...entry, status: "completed" } : entry));
   }
 
   function rememberArtifact(artifact: ArtifactFile, trackTurn = true) {
@@ -496,12 +514,16 @@ export default function Home() {
     if (method === "item/started") {
       const item = (params.item || {}) as Record<string, unknown>;
       if (item.type === "agentMessage") {
+        if (item.phase === "final_answer") startLiveStep(`response-${String(item.id)}`, "Preparando a resposta", true);
         currentAssistantMessageIdRef.current = String(item.id);
         setMessages((current) => current.some((entry) => entry.id === String(item.id)) ? current : [...current, { id: String(item.id), role: "assistant", content: "", streaming: true, phase: (item.phase as MessagePhase | undefined) ?? null }]);
         return;
       }
       if (item.type === "userMessage") return;
       const [kind, title, detail] = itemLabel(item);
+      const progressId = item.type === "reasoning" ? "analysis" : String(item.id || crypto.randomUUID());
+      if (item.type !== "reasoning") completeLiveStep("analysis");
+      startLiveStep(progressId, item.type === "reasoning" ? "Analisando o pedido" : title);
       setEvents((current) => [{ id: String(item.id || crypto.randomUUID()), kind, title, detail, status: "running" }, ...current]);
       return;
     }
@@ -511,10 +533,12 @@ export default function Home() {
         const messageId = String(item.id);
         const text = String(item.text || "");
         const phase = (item.phase as MessagePhase | undefined) ?? null;
+        if (phase === "final_answer") completeLiveStep(`response-${messageId}`);
         currentAssistantMessageIdRef.current = messageId;
         setMessages((current) => current.map((entry) => entry.id === messageId ? { ...entry, content: text || entry.content, streaming: false, phase } : entry));
         if (text && phase === "final_answer") void discoverArtifactsFromText(text, messageId);
       } else {
+        completeLiveStep(item.type === "reasoning" ? "analysis" : String(item.id));
         setEvents((current) => current.map((entry) => entry.id === String(item.id) ? { ...entry, status: String(item.status || "completed"), detail: item.type === "commandExecution" ? String(item.aggregatedOutput || entry.detail) : entry.detail } : entry));
         if (item.type === "commandExecution" && item.aggregatedOutput) {
           const commandOutput = String(item.aggregatedOutput);
@@ -538,10 +562,15 @@ export default function Home() {
       setTerminal((current) => current + String(params.delta || "")); setActiveTab("terminal");
       return;
     }
-    if (method === "turn/plan/updated") { setPlan((params.plan as PlanStep[]) || []); return; }
+    if (method === "turn/plan/updated") {
+      setPlan((params.plan as PlanStep[]) || []);
+      completeLiveStep("analysis");
+      return;
+    }
     if (method === "turn/diff/updated") { setDiff(String(params.diff || "")); return; }
     if (method === "turn/started") {
       turnActiveRef.current = true;
+      activeTurnIdRef.current = String((params.turn as { id?: string } | undefined)?.id || activeTurnIdRef.current);
       turnStartedAtRef.current = currentTimeMs();
       turnArtifactPathsRef.current.clear();
       return;
@@ -549,8 +578,9 @@ export default function Home() {
     if (method === "turn/completed") {
       turnActiveRef.current = false;
       const turn = (params.turn || {}) as { status?: string; error?: { message?: string } };
+      setLiveSteps((current) => current.map((entry) => entry.status === "inProgress" ? { ...entry, status: "completed" } : entry));
       setBusy(false);
-      setStatus(turn.status === "completed" ? "Pronto" : "Execução encerrada");
+      setStatus(turn.status === "completed" ? "Pronto" : turn.status === "interrupted" ? "Execução pausada" : "Execução encerrada");
       if (turn.error?.message) setError(turn.error.message);
       const pendingTitle = pendingTitleRef.current;
       pendingTitleRef.current = "";
@@ -558,10 +588,12 @@ export default function Home() {
         void clientRef.current.request("thread/name/set", { threadId: activeThreadRef.current, name: pendingTitle }).then(() => refreshThreads()).catch(() => refreshThreads());
       } else void refreshThreads(clientRef.current);
       if (turn.status === "completed") void finalizeTurnArtifacts();
+      activeTurnIdRef.current = "";
       return;
     }
     if (method === "error" || method === "warning" || method === "guardianWarning") {
       turnActiveRef.current = false;
+      activeTurnIdRef.current = "";
       const detail = String(params.message || params.error || "O Codex informou um erro.");
       setError(detail); setBusy(false); setStatus("Aguardando");
     }
@@ -569,7 +601,7 @@ export default function Home() {
 
   async function createCodexThread(client = clientRef.current) {
     if (!client?.connected) return;
-    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); resetArtifacts(); setActiveTab("activity");
+    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); setLiveSteps([]); resetArtifacts(); setActiveTab("activity");
     const response = await client.request<ThreadStartResponse>("thread/start", {
       model: model || undefined,
       approvalPolicy: "on-request",
@@ -612,7 +644,7 @@ export default function Home() {
       const response = await client.request<ThreadStartResponse>("thread/resume", { threadId: id, approvalPolicy: "on-request", sandbox });
       const workspace = response.cwd || response.thread.cwd;
       activeThreadRef.current = response.thread.id; activeCwdRef.current = workspace; setThreadId(response.thread.id); setCwd(workspace); setModel(response.model);
-      setMessages(messagesFromTurns(response.thread.turns)); setEvents([]); setPlan([]); setTerminal(""); setDiff(""); setStatus("Pronto");
+      setMessages(messagesFromTurns(response.thread.turns)); setEvents([]); setPlan([]); setLiveSteps([]); setTerminal(""); setDiff(""); setStatus("Pronto");
       await watchWorkspace(client, workspace, response.thread.id);
       await hydrateArtifacts(response.thread.turns);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível abrir a tarefa."); setStatus("Aguardando"); }
@@ -625,6 +657,9 @@ export default function Home() {
     if (content.startsWith("/") && await runSlashCommand(content)) return;
     setInput(""); setError(""); setStatus("Codex está pensando"); setBusy(true); setMenu(null);
     turnActiveRef.current = true;
+    activeTurnIdRef.current = "";
+    setPlan([]);
+    setLiveSteps([{ id: "analysis", step: "Analisando o pedido", status: "inProgress" }]);
     turnStartedAtRef.current = currentTimeMs();
     turnArtifactPathsRef.current.clear();
     currentAssistantMessageIdRef.current = "";
@@ -662,9 +697,12 @@ export default function Home() {
           inputs.push(file.type.startsWith("image/") ? { type: "localImage", path: file.path } : { type: "mention", name: file.name, path: file.path });
           if (file.contextPath) inputs.push({ type: "mention", name: `${file.name} — conteúdo extraído`, path: file.contextPath });
         });
-        await clientRef.current.request("turn/start", { threadId, input: inputs, model: model || undefined, approvalPolicy: "on-request" });
+        const started = await clientRef.current.request<{ turn: { id: string } }>("turn/start", { threadId, input: inputs, model: model || undefined, approvalPolicy: "on-request" });
+        activeTurnIdRef.current = started.turn.id;
         setFiles([]); setContextFiles([]); setSelectedSkills([]);
       } catch (caught) {
+        turnActiveRef.current = false;
+        activeTurnIdRef.current = "";
         pendingTitleRef.current = "";
         setError(caught instanceof Error ? caught.message : "Falha ao iniciar o turno."); setBusy(false); setStatus("Aguardando");
       }
@@ -684,7 +722,18 @@ export default function Home() {
   async function runSlashCommand(command: string) {
     const client = clientRef.current;
     if (command === "/new") { setInput(""); setMenu(null); if (engine === "codex") await createCodexThread(); else await startResponsesFallback(); return true; }
-    if (command === "/interrupt") { setInput(""); setMenu(null); if (client?.connected && threadId) await client.request("turn/interrupt", { threadId }); return true; }
+    if (command === "/interrupt") {
+      setInput(""); setMenu(null);
+      const turnId = activeTurnIdRef.current;
+      if (!client?.connected || !threadId || !turnId) { setError("Não há uma execução ativa para pausar."); return true; }
+      setStatus("Pausando execução");
+      try {
+        await client.request("turn/interrupt", { threadId, turnId });
+        setStatus("Execução pausada");
+        setLiveSteps((current) => current.map((entry) => entry.status === "inProgress" ? { ...entry, status: "pending" } : entry));
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível pausar a execução."); }
+      return true;
+    }
     if (command === "/compact") { setInput(""); setMenu(null); if (client?.connected) { setBusy(true); setStatus("Compactando contexto"); await client.request("thread/compact/start", { threadId }); } return true; }
     if (command === "/skills") { setInput(""); setMenu("skills"); return true; }
     if (command === "/status") { setInput(""); setError(engine === "codex" ? `Codex App Server conectado em ${cwd}.` : `Motor atual: ${engine}.`); return true; }
@@ -832,6 +881,7 @@ export default function Home() {
   const inputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "input" && artifact.threadInput), [artifacts]);
   const workerArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "worker"), [artifacts]);
   const visibleArtifactCount = outputArtifacts.length + inputArtifacts.length;
+  const displayedSteps: LiveStep[] = plan.length ? plan.map((step, index) => ({ ...step, id: `plan-${index}` })) : liveSteps;
   const title = messages.find((message) => message.role === "user")?.content.slice(0, 48) || "Nova tarefa InDev";
 
   return <main className={`app-shell ${activeTab === "preview" && preview ? "result-view" : ""}`}>
@@ -895,7 +945,7 @@ export default function Home() {
       <div className="activity-body">
         {activeTab !== "preview" && <label>● {status.toUpperCase()}</label>}
         {activeTab === "activity" && <>
-          <h2>Plano</h2>{plan.length ? plan.map((step, index) => <p key={`${step.step}-${index}`} className={step.status}>◌ {step.step}</p>) : <p className="muted">O plano aparecerá quando a tarefa exigir várias etapas.</p>}
+          <h2>Passos</h2>{displayedSteps.length ? <div className="plan-list">{displayedSteps.map((step) => <div className={`plan-step ${step.status}`} key={step.id}><span>{step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}</span><div><strong>{step.step}</strong><small>{step.status === "completed" ? "Concluído" : step.status === "inProgress" ? "Em andamento" : "Aguardando"}</small></div></div>)}</div> : <p className="muted">Os passos aparecerão e serão marcados conforme o InDev trabalha.</p>}
           <h2>Execuções</h2>{events.length ? events.map((entry) => <div className="event-card" key={entry.id}><span className={entry.status}></span><div><b>{entry.title}</b><small>{entry.detail || entry.status}</small></div></div>) : <p className="muted">Tools e comandos aparecerão aqui em tempo real.</p>}
           {diff && <><h2>Últimas alterações</h2><pre className="diff-preview">{diff.slice(-2400)}</pre></>}
         </>}
@@ -1013,7 +1063,7 @@ export default function Home() {
               </div>
               <div className="manual-timeline">
                 <article><b>Pedido</b><span></span><p>Você define o resultado.</p></article>
-                <article><b>Plano</b><span></span><p>O agente organiza etapas quando necessário.</p></article>
+                <article><b>Passos</b><span></span><p>As etapas aparecem e mudam de aguardando para em andamento e concluído conforme o agente trabalha.</p></article>
                 <article><b>Tools</b><span></span><p>Lê arquivos e executa ações permitidas.</p></article>
                 <article><b>Validação</b><span></span><p>Testes e saídas aparecem no painel.</p></article>
                 <article><b>Resposta</b><p>Você recebe o resultado e as alterações.</p></article>
