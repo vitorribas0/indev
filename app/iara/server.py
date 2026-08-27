@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import hmac
+import io
 import json
 import os
 import signal
 import sys
-import threading
 import time
-import urllib.error
-import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterator
@@ -242,52 +240,58 @@ def shutdown(*_: Any) -> None:
 
 
 def self_test() -> None:
-    """Valida o contrato HTTP do adaptador sem depender de outro processo."""
+    """Valida rotas, autenticação e SSE sem abrir uma porta de rede."""
 
     if not MOCK_MODE:
         raise RuntimeError("O autoteste exige INDEV_IARA_MOCK=1.")
-    server = ThreadingHTTPServer((HOST, 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base_url = f"http://{HOST}:{server.server_address[1]}"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        health_request = urllib.request.Request(f"{base_url}/healthz", headers={"Connection": "close"})
-        with opener.open(health_request, timeout=5) as response:
-            health = json.loads(response.read())
-        if response.status != 200 or not health.get("ready") or not health.get("mock"):
-            raise RuntimeError("A rota /healthz não confirmou o adaptador simulado.")
 
-        try:
-            models_request = urllib.request.Request(f"{base_url}/v1/models", headers={"Connection": "close"})
-            opener.open(models_request, timeout=5)
-            raise RuntimeError("A rota /v1/models aceitou uma requisição sem autenticação.")
-        except urllib.error.HTTPError as error:
-            with error:
-                if error.code != 401:
-                    raise RuntimeError(f"/v1/models retornou HTTP {error.code}, esperado 401.") from error
+    class MemoryHandler(Handler):
+        def __init__(self, path: str, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
+            self.path = path
+            self.headers = headers or {}
+            self.rfile = io.BytesIO(body)
+            self.wfile = io.BytesIO()
+            self.status = 0
+            self.response_headers: dict[str, str] = {}
+            self.close_connection = False
 
-        request = urllib.request.Request(
-            f"{base_url}/v1/responses",
-            data=json.dumps({"model": configured_models()[0], "input": "teste", "stream": True}).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {LOCAL_TOKEN}",
-                "Connection": "close",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with opener.open(request, timeout=5) as response:
-            events = response.read().decode("utf-8")
-        if response.status != 200:
-            raise RuntimeError(f"/v1/responses retornou HTTP {response.status}.")
-        for expected in ("response.output_text.delta", "response.completed", "data: [DONE]"):
-            if expected not in events:
-                raise RuntimeError(f"O streaming não contém {expected!r}.")
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        def send_response(self, code: int, message: str | None = None) -> None:
+            self.status = code
+
+        def send_header(self, keyword: str, value: str) -> None:
+            self.response_headers[keyword.lower()] = value
+
+        def end_headers(self) -> None:
+            return
+
+    health_handler = MemoryHandler("/healthz")
+    health_handler.do_GET()
+    health = json.loads(health_handler.wfile.getvalue())
+    if health_handler.status != 200 or not health.get("ready") or not health.get("mock"):
+        raise RuntimeError("A rota /healthz não confirmou o adaptador simulado.")
+
+    unauthorized_handler = MemoryHandler("/v1/models")
+    unauthorized_handler.do_GET()
+    if unauthorized_handler.status != 401:
+        raise RuntimeError(f"/v1/models retornou HTTP {unauthorized_handler.status}, esperado 401.")
+
+    body = json.dumps({"model": configured_models()[0], "input": "teste", "stream": True}).encode("utf-8")
+    streaming_handler = MemoryHandler(
+        "/v1/responses",
+        headers={
+            "Authorization": f"Bearer {LOCAL_TOKEN}",
+            "Content-Length": str(len(body)),
+            "Content-Type": "application/json",
+        },
+        body=body,
+    )
+    streaming_handler.do_POST()
+    events = streaming_handler.wfile.getvalue().decode("utf-8")
+    if streaming_handler.status != 200 or streaming_handler.response_headers.get("content-type") != "text/event-stream":
+        raise RuntimeError("A rota /v1/responses não iniciou o streaming SSE.")
+    for expected in ("response.output_text.delta", "response.completed", "data: [DONE]"):
+        if expected not in events:
+            raise RuntimeError(f"O streaming não contém {expected!r}.")
     print("OK: adaptador Iara autenticado e compatível com Responses streaming", flush=True)
 
 
