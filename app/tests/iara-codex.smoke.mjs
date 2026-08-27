@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { WebSocket } from "ws";
 import {
   codexAppServerArgs,
@@ -36,13 +35,13 @@ function start(command, args) {
 }
 
 function pythonCommand() {
-  const configuredRoot = process.env.Python_ROOT_DIR || process.env.pythonLocation;
-  if (configuredRoot) {
-    return process.platform === "win32"
-      ? join(configuredRoot, "python.exe")
-      : join(configuredRoot, "bin", "python3");
+  const candidates = [process.env.INDEV_TEST_PYTHON, "python", "python3"].filter(Boolean);
+  for (const command of [...new Set(candidates)]) {
+    const probe = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 5_000 });
+    if (probe.status === 0) return command;
+    diagnostics += `\nFalha ao testar ${command}: ${probe.error?.message || probe.stderr || `código ${probe.status}`}`;
   }
-  return process.platform === "win32" ? "python" : "python3";
+  throw new Error(`Python 3 não foi encontrado.${diagnostics}`);
 }
 
 async function waitFor(url, label, timeoutMs = 20_000) {
