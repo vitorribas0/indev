@@ -238,7 +238,7 @@ export default function Home() {
   async function refreshThreads(client = clientRef.current) {
     if (!client?.connected) return;
     try {
-      const result = await client.request<{ data: ThreadSummary[] }>("thread/list", { limit: 12, sourceKinds: ["appServer"], sortKey: "updated_at", sortDirection: "desc" });
+      const result = await client.request<{ data: ThreadSummary[] }>("thread/list", { limit: 12, sourceKinds: ["appServer"], sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true });
       setThreads((result.data || []).filter((thread) => thread.preview || thread.id === activeThreadRef.current));
     } catch { /* histórico não bloqueia o chat */ }
   }
