@@ -7,7 +7,10 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Iterator
@@ -238,9 +241,54 @@ def shutdown(*_: Any) -> None:
     raise KeyboardInterrupt
 
 
+def self_test() -> None:
+    """Valida o contrato HTTP do adaptador sem depender de outro processo."""
+
+    if not MOCK_MODE:
+        raise RuntimeError("O autoteste exige INDEV_IARA_MOCK=1.")
+    server = ThreadingHTTPServer((HOST, 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://{HOST}:{server.server_address[1]}"
+    try:
+        with urllib.request.urlopen(f"{base_url}/healthz", timeout=5) as response:
+            health = json.loads(response.read())
+        if response.status != 200 or not health.get("ready") or not health.get("mock"):
+            raise RuntimeError("A rota /healthz não confirmou o adaptador simulado.")
+
+        try:
+            urllib.request.urlopen(f"{base_url}/v1/models", timeout=5)
+            raise RuntimeError("A rota /v1/models aceitou uma requisição sem autenticação.")
+        except urllib.error.HTTPError as error:
+            if error.code != 401:
+                raise RuntimeError(f"/v1/models retornou HTTP {error.code}, esperado 401.") from error
+
+        request = urllib.request.Request(
+            f"{base_url}/v1/responses",
+            data=json.dumps({"model": configured_models()[0], "input": "teste", "stream": True}).encode("utf-8"),
+            headers={"Authorization": f"Bearer {LOCAL_TOKEN}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            events = response.read().decode("utf-8")
+        if response.status != 200:
+            raise RuntimeError(f"/v1/responses retornou HTTP {response.status}.")
+        for expected in ("response.output_text.delta", "response.completed", "data: [DONE]"):
+            if expected not in events:
+                raise RuntimeError(f"O streaming não contém {expected!r}.")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    print("OK: adaptador Iara autenticado e compatível com Responses streaming", flush=True)
+
+
 if __name__ == "__main__":
     if not LOCAL_TOKEN:
         raise SystemExit("INDEV_IARA_PROXY_TOKEN não foi definido.")
+    if "--self-test" in sys.argv:
+        self_test()
+        raise SystemExit(0)
     signal.signal(signal.SIGTERM, shutdown)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[iara] Adaptador local pronto em http://{HOST}:{PORT}", flush=True)

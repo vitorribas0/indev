@@ -50,6 +50,6 @@ npm run doctor:iara
 npm run test:iara
 ```
 
-O primeiro comando valida credenciais locais, Python e importação do SDK. O segundo valida o caminho completo Codex App Server → adaptador Responses → Iara em modo simulado, sem consumir o serviço real.
+O primeiro comando valida credenciais locais, Python e importação do SDK. O segundo testa os dois lados da integração sem consumir o serviço real: o adaptador Python (autenticação, Responses e streaming) e o Codex App Server usando esse mesmo contrato.
 
 O guia completo para Windows, macOS e Linux está no [README principal](../../README.md).
