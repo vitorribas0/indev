@@ -250,26 +250,34 @@ def self_test() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://{HOST}:{server.server_address[1]}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(f"{base_url}/healthz", timeout=5) as response:
+        health_request = urllib.request.Request(f"{base_url}/healthz", headers={"Connection": "close"})
+        with opener.open(health_request, timeout=5) as response:
             health = json.loads(response.read())
         if response.status != 200 or not health.get("ready") or not health.get("mock"):
             raise RuntimeError("A rota /healthz não confirmou o adaptador simulado.")
 
         try:
-            urllib.request.urlopen(f"{base_url}/v1/models", timeout=5)
+            models_request = urllib.request.Request(f"{base_url}/v1/models", headers={"Connection": "close"})
+            opener.open(models_request, timeout=5)
             raise RuntimeError("A rota /v1/models aceitou uma requisição sem autenticação.")
         except urllib.error.HTTPError as error:
-            if error.code != 401:
-                raise RuntimeError(f"/v1/models retornou HTTP {error.code}, esperado 401.") from error
+            with error:
+                if error.code != 401:
+                    raise RuntimeError(f"/v1/models retornou HTTP {error.code}, esperado 401.") from error
 
         request = urllib.request.Request(
             f"{base_url}/v1/responses",
             data=json.dumps({"model": configured_models()[0], "input": "teste", "stream": True}).encode("utf-8"),
-            headers={"Authorization": f"Bearer {LOCAL_TOKEN}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {LOCAL_TOKEN}",
+                "Connection": "close",
+                "Content-Type": "application/json",
+            },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with opener.open(request, timeout=5) as response:
             events = response.read().decode("utf-8")
         if response.status != 200:
             raise RuntimeError(f"/v1/responses retornou HTTP {response.status}.")
