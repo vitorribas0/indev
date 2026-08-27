@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { codexAppServerArgs, getRuntimeConfig, iaraServerEntrypoint } from "../scripts/indev-runtime.mjs";
+import { codexAppServerArgs, getRuntimeConfig, iaraRequirements, iaraServerEntrypoint } from "../scripts/indev-runtime.mjs";
 import { resolveLlmProvider } from "../lib/llm-provider.mjs";
 
 test("a configuração Iara gera um provider Responses local para o Codex", () => {
@@ -42,7 +42,10 @@ test("tools diretas usam o mesmo provedor e modelo econômico", () => {
 });
 
 test("o adaptador Iara é restrito a localhost, autenticado e compatível com Responses", async () => {
-  const source = await readFile(iaraServerEntrypoint, "utf8");
+  const [source, requirements] = await Promise.all([
+    readFile(iaraServerEntrypoint, "utf8"),
+    readFile(iaraRequirements, "utf8"),
+  ]);
   assert.match(source, /HOST = "127\.0\.0\.1"/);
   assert.match(source, /hmac\.compare_digest/);
   assert.match(source, /IARA_ACCESS_TOKEN/);
@@ -50,4 +53,8 @@ test("o adaptador Iara é restrito a localhost, autenticado e compatível com Re
   assert.match(source, /"\/v1\/responses"/);
   assert.match(source, /"text\/event-stream"/);
   assert.match(source, /client\.responses\.stream/);
+  assert.match(requirements, /--trusted-host artifactory\.prod\.aws\.cloud\.ihf/);
+  assert.match(requirements, /python-remotes\/simple/);
+  assert.match(requirements, /itau-kk7-python-release\/simple/);
+  assert.doesNotMatch(requirements, /snapshot/i);
 });

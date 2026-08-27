@@ -83,20 +83,23 @@ https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simpl
 
 Índice adicional:
 https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple
+
+Host confiável exigido pela documentação:
+artifactory.prod.aws.cloud.ihf
 ```
 
 Se precisar reproduzir a instalação manualmente no Windows PowerShell, execute a partir da raiz:
 
 ```powershell
 py -3 -m venv .indev\iara-venv
-.\.indev\iara-venv\Scripts\python.exe -m pip install --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
+.\.indev\iara-venv\Scripts\python.exe -m pip install --trusted-host "artifactory.prod.aws.cloud.ihf" --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
 ```
 
 No macOS ou Linux:
 
 ```bash
 python3 -m venv .indev/iara-venv
-./.indev/iara-venv/bin/python -m pip install --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
+./.indev/iara-venv/bin/python -m pip install --trusted-host "artifactory.prod.aws.cloud.ihf" --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
 ```
 
 Esses comandos manuais são opcionais; normalmente `npm run setup:iara` cuida de tudo.

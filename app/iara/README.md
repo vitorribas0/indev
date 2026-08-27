@@ -32,7 +32,7 @@ https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-rele
 Exemplo com um ambiente Python já ativado:
 
 ```bash
-python -m pip install --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
+python -m pip install --trusted-host "artifactory.prod.aws.cloud.ihf" --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
 ```
 
 Se usar esse caminho, informe o executável Python instalado em `INDEV_IARA_PYTHON` ou mantenha o ambiente no caminho `.indev/iara-venv` esperado pelo setup.

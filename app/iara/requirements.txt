@@ -1,3 +1,4 @@
+--trusted-host artifactory.prod.aws.cloud.ihf
 --index-url https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple
 --extra-index-url https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple
 iara_genai_sdk==0.34.0
