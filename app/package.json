@@ -32,7 +32,6 @@
     "react-dom": "19.2.6",
     "react-loading-skeleton": "3.5.0",
     "read-excel-file": "9.3.10",
-    "undici": "^8.10.0",
     "ws": "^8.21.3"
   },
   "overrides": {
