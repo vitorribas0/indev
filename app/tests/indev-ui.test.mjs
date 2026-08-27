@@ -60,6 +60,9 @@ test("resultados locais viram prévia e download dentro do InDev", async () => {
   }
   assert.match(page, /artifact-preview/);
   assert.match(page, /Baixar ZIP/);
+  assert.match(page, /Somente os resultados finais que você pediu/);
+  assert.match(page, /artifact\.role === "output"/);
+  assert.match(page, /Bastidores/);
   assert.match(page, /sandbox="allow-scripts allow-forms allow-modals allow-downloads"/);
   assert.match(artifacts, /messageWithoutLocalPaths/);
   assert.match(artifacts, /isPathInsideWorkspace/);

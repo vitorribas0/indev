@@ -15,11 +15,14 @@ import {
   messageWithoutLocalPaths,
   shouldIgnoreArtifactPath,
   type ArtifactKind,
+  type ArtifactRole,
+  mergeArtifactRole,
 } from "@/lib/artifacts";
 import { extractSpreadsheetContext, isExcelWorkbook, isLegacyExcelWorkbook, type SpreadsheetContext } from "@/lib/spreadsheet-context";
 import "./uploads.css";
 
-type ChatMessage = { id: string; role: "user" | "assistant"; content: string; streaming?: boolean };
+type MessagePhase = "commentary" | "final_answer" | null;
+type ChatMessage = { id: string; role: "user" | "assistant"; content: string; streaming?: boolean; phase?: MessagePhase };
 type WorkspaceFile = {
   id: string;
   name: string;
@@ -44,6 +47,7 @@ type ArtifactFile = {
   path: string;
   mime: string;
   kind: ArtifactKind;
+  role: ArtifactRole;
   size?: number;
   modifiedAtMs?: number;
   sourceMessageId?: string;
@@ -86,7 +90,7 @@ function messagesFromTurns(turns: ThreadStartResponse["thread"]["turns"] = []) {
         const content = (item.content as Array<{ type: string; text?: string }> | undefined)?.filter((part) => part.type === "text").map((part) => part.text).join("\n") || "";
         if (content) output.push({ id: String(item.id), role: "user", content });
       }
-      if (item.type === "agentMessage" && item.text) output.push({ id: String(item.id), role: "assistant", content: String(item.text) });
+      if (item.type === "agentMessage" && item.text) output.push({ id: String(item.id), role: "assistant", content: String(item.text), phase: (item.phase as MessagePhase | undefined) ?? null });
     }
   }
   return output;
@@ -187,6 +191,7 @@ export default function Home() {
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [artifactBusy, setArtifactBusy] = useState("");
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
+  const [workersOpen, setWorkersOpen] = useState(false);
 
   useEffect(() => { activeThreadRef.current = threadId; }, [threadId]);
   useEffect(() => { activeCwdRef.current = cwd; }, [cwd]);
@@ -216,6 +221,7 @@ export default function Home() {
     setArtifacts([]);
     setPreview(null);
     setArtifactBusy("");
+    setWorkersOpen(false);
   }
 
   function rememberArtifact(artifact: ArtifactFile, trackTurn = true) {
@@ -230,10 +236,12 @@ export default function Home() {
         return next;
       }
       const importantKind = ["generated", "modified"].includes(artifact.kind) ? artifact.kind : existing.kind;
+      const importantRole = mergeArtifactRole(existing.role, artifact.role);
       const next = current.map((entry) => artifactPathKey(entry.path) === key ? {
         ...entry,
         ...artifact,
         kind: importantKind,
+        role: importantRole,
         sourceMessageId: artifact.sourceMessageId || entry.sourceMessageId,
         size: artifact.size || entry.size,
       } : entry);
@@ -256,7 +264,7 @@ export default function Home() {
     });
   }
 
-  async function registerArtifactPath(rawPath: string, kind: ArtifactKind, sourceMessageId?: string, trackTurn = true) {
+  async function registerArtifactPath(rawPath: string, kind: ArtifactKind, sourceMessageId?: string, trackTurn = true, role: ArtifactRole = "worker") {
     const client = clientRef.current;
     const workspace = activeCwdRef.current;
     if (!client?.connected || !workspace || !rawPath) return null;
@@ -271,6 +279,7 @@ export default function Home() {
         path,
         mime: artifactMimeType(path),
         kind: kind === "worked" && isOutputArtifact(path) ? "generated" : kind,
+        role,
         modifiedAtMs: metadata.modifiedAtMs,
         sourceMessageId,
       } satisfies ArtifactFile;
@@ -298,7 +307,7 @@ export default function Home() {
   async function discoverArtifactsFromText(text: string, sourceMessageId: string, trackTurn = true) {
     const discovered: ArtifactFile[] = [];
     for (const candidate of extractArtifactCandidates(text)) {
-      const artifact = await registerArtifactPath(candidate.path, "generated", sourceMessageId, trackTurn);
+      const artifact = await registerArtifactPath(candidate.path, "generated", sourceMessageId, trackTurn, "output");
       if (artifact) discovered.push(artifact);
     }
     return discovered;
@@ -343,7 +352,7 @@ export default function Home() {
           const metadata = await client.request<{ isFile: boolean; isDirectory: boolean; modifiedAtMs: number }>("fs/getMetadata", { path });
           if (!metadata.isFile || metadata.modifiedAtMs < sinceMs) continue;
           const scanKind: ArtifactKind = /[\\/]\.indev[\\/]uploads[\\/]/.test(path) ? "uploaded" : isOutputArtifact(path) ? "generated" : "worked";
-          const artifact = await registerArtifactPath(path, scanKind, currentAssistantMessageIdRef.current);
+          const artifact = await registerArtifactPath(path, scanKind, currentAssistantMessageIdRef.current, true, scanKind === "uploaded" ? "input" : "worker");
           if (artifact) discovered.push(artifact);
         } catch { /* arquivo pode ter sido movido durante a varredura */ }
       }
@@ -356,9 +365,10 @@ export default function Home() {
     const turnKeys = turnArtifactPathsRef.current;
     const current = artifactListRef.current.filter((artifact) => turnKeys.has(artifactPathKey(artifact.path)));
     const combined = [...scanned, ...current].filter((artifact, index, list) => list.findIndex((entry) => artifactPathKey(entry.path) === artifactPathKey(artifact.path)) === index);
-    const html = combined.find((artifact) => artifactPreviewKind(artifact.path) === "html");
+    const outputs = combined.filter((artifact) => artifact.role === "output");
+    const html = outputs.find((artifact) => artifactPreviewKind(artifact.path) === "html");
     if (html) await openArtifact(html);
-    else if (combined.length) setActiveTab("files");
+    else if (outputs.length) setActiveTab("files");
   }
 
   async function refreshWorkspaceResults() {
@@ -428,7 +438,7 @@ export default function Home() {
             if (kindType !== "delete") await registerArtifactPath(change.path, kindType === "add" ? "generated" : "modified", undefined, false);
           }
         }
-        if (item.type === "agentMessage" && item.text) await discoverArtifactsFromText(String(item.text), String(item.id), false);
+        if (item.type === "agentMessage" && item.text && item.phase === "final_answer") await discoverArtifactsFromText(String(item.text), String(item.id), false);
         if (item.type === "userMessage") {
           for (const part of (item.content as Array<{ type?: string; path?: string; name?: string }> | undefined) || []) {
             if (part.path) await registerArtifactPath(part.path, part.path.includes(".indev") ? "uploaded" : "referenced", undefined, false);
@@ -469,7 +479,7 @@ export default function Home() {
       const item = (params.item || {}) as Record<string, unknown>;
       if (item.type === "agentMessage") {
         currentAssistantMessageIdRef.current = String(item.id);
-        setMessages((current) => current.some((entry) => entry.id === String(item.id)) ? current : [...current, { id: String(item.id), role: "assistant", content: "", streaming: true }]);
+        setMessages((current) => current.some((entry) => entry.id === String(item.id)) ? current : [...current, { id: String(item.id), role: "assistant", content: "", streaming: true, phase: (item.phase as MessagePhase | undefined) ?? null }]);
         return;
       }
       if (item.type === "userMessage") return;
@@ -482,9 +492,10 @@ export default function Home() {
       if (item.type === "agentMessage") {
         const messageId = String(item.id);
         const text = String(item.text || "");
+        const phase = (item.phase as MessagePhase | undefined) ?? null;
         currentAssistantMessageIdRef.current = messageId;
-        setMessages((current) => current.map((entry) => entry.id === messageId ? { ...entry, content: text || entry.content, streaming: false } : entry));
-        if (text) void discoverArtifactsFromText(text, messageId);
+        setMessages((current) => current.map((entry) => entry.id === messageId ? { ...entry, content: text || entry.content, streaming: false, phase } : entry));
+        if (text && phase === "final_answer") void discoverArtifactsFromText(text, messageId);
       } else {
         setEvents((current) => current.map((entry) => entry.id === String(item.id) ? { ...entry, status: String(item.status || "completed"), detail: item.type === "commandExecution" ? String(item.aggregatedOutput || entry.detail) : entry.detail } : entry));
         if (item.type === "commandExecution" && item.aggregatedOutput) {
@@ -543,7 +554,7 @@ export default function Home() {
       approvalPolicy: "on-request",
       sandbox,
       threadSource: "indev",
-      developerInstructions: "Você é o InDev, um agente de desenvolvimento local. Responda em português quando o usuário falar português. Use tools com segurança, mantenha o usuário informado e nunca alegue uma execução que não ocorreu. Salve todo relatório, pacote ZIP e outro entregável dentro da área de trabalho da tarefa. Ao finalizar, mencione o caminho absoluto de cada arquivo criado para que a interface do InDev o transforme em prévia e download.",
+      developerInstructions: "Você é o InDev, um agente de desenvolvimento local. Responda em português quando o usuário falar português. Use tools com segurança, mantenha o usuário informado e nunca alegue uma execução que não ocorreu. Salve todo relatório, pacote ZIP e outro entregável dentro da área de trabalho da tarefa. Na resposta final, mencione o caminho absoluto somente dos entregáveis solicitados pelo usuário; a interface transforma esses caminhos em prévia e download. Não mencione scripts, cópias, arquivos temporários ou auxiliares, salvo quando o usuário pedir o processo completo.",
     });
     activeThreadRef.current = response.thread.id;
     const workspace = response.cwd || response.thread.cwd;
@@ -694,7 +705,7 @@ export default function Home() {
           spreadsheetSummary: spreadsheet?.summary,
         };
         setFiles((current) => [...current, uploadedArtifact]);
-        rememberArtifact({ id: artifactPathKey(path), name: selected.name, path, mime: selected.type || artifactMimeType(path), kind: "uploaded", size: selected.size }, false);
+        rememberArtifact({ id: artifactPathKey(path), name: selected.name, path, mime: selected.type || artifactMimeType(path), kind: "uploaded", role: "input", size: selected.size }, false);
       } else {
         const form = new FormData(); form.append("file", selected);
         const response = await fetch(`/api/threads/${threadId}/files`, { method: "POST", body: form });
@@ -723,7 +734,7 @@ export default function Home() {
   function addContextFile(entry: FileEntry) {
     const path = joinAgentPath(cwd, entry.fileName);
     setContextFiles((current) => current.some((file) => file.path === path) ? current : [...current, { id: crypto.randomUUID(), name: entry.fileName, size: 0, type: entry.isDirectory ? "inode/directory" : "text/plain", path }]);
-    if (entry.isFile) rememberArtifact({ id: artifactPathKey(path), name: entry.fileName, path, mime: artifactMimeType(path), kind: "referenced" }, false);
+    if (entry.isFile) rememberArtifact({ id: artifactPathKey(path), name: entry.fileName, path, mime: artifactMimeType(path), kind: "referenced", role: "input" }, false);
     setMenu(null);
   }
 
@@ -792,8 +803,10 @@ export default function Home() {
   }, []);
 
   const allAttachments = useMemo(() => [...files, ...contextFiles], [files, contextFiles]);
-  const resultArtifacts = useMemo(() => artifacts.filter((artifact) => ["generated", "modified", "worked"].includes(artifact.kind)), [artifacts]);
-  const usedArtifacts = useMemo(() => artifacts.filter((artifact) => ["uploaded", "referenced"].includes(artifact.kind)), [artifacts]);
+  const outputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "output"), [artifacts]);
+  const inputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "input"), [artifacts]);
+  const workerArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "worker"), [artifacts]);
+  const visibleArtifactCount = outputArtifacts.length + inputArtifacts.length;
   const title = messages.find((message) => message.role === "user")?.content.slice(0, 48) || "Nova tarefa InDev";
 
   return <main className={`app-shell ${activeTab === "preview" && preview ? "result-view" : ""}`}>
@@ -822,7 +835,7 @@ export default function Home() {
       <div className="chat">
         {messages.length === 0 && <div className="welcome"><span>i</span><h2>O que vamos construir?</h2><p>{engine === "codex" ? "Tools, sandbox, terminal, arquivos, skills e memória estão conectados." : "Conectando ao motor local do InDev…"}</p></div>}
         {messages.map((message) => {
-          const relatedArtifacts = artifacts.filter((artifact) => artifact.sourceMessageId === message.id);
+          const relatedArtifacts = artifacts.filter((artifact) => artifact.role === "output" && artifact.sourceMessageId === message.id);
           return <article className={`message ${message.role}`} key={message.id}><b>{message.role === "user" ? "V" : "i"}</b><div>{message.role === "assistant" ? messageWithoutLocalPaths(message.content) : message.content}{message.streaming && <span className="cursor">▋</span>}{relatedArtifacts.length > 0 && <div className="message-results">{relatedArtifacts.map((artifact) => <button type="button" key={artifact.path} onClick={() => void openArtifact(artifact)}><span>{artifactPreviewKind(artifact.path) === "html" ? "◫" : artifact.name.toLowerCase().endsWith(".zip") ? "ZIP" : "▤"}</span><div><strong>{artifact.name}</strong><small>{artifactKindLabel(artifact.kind)} · {artifactPreviewKind(artifact.path) ? "abrir resultado" : "baixar arquivo"}</small></div><em>→</em></button>)}</div>}</div></article>;
         })}
         {busy && !messages.some((message) => message.streaming) && <div className="thinking"><span></span><span></span><span></span> Codex está trabalhando…</div>}
@@ -853,7 +866,7 @@ export default function Home() {
     </section>
 
     <aside className="activity">
-      <nav><button className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Atividade</button><button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>Arquivos{artifacts.length > 0 && <span>{artifacts.length}</span>}</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>Terminal</button>{preview && <button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}>Resultado</button>}</nav>
+      <nav><button className={activeTab === "activity" ? "active" : ""} onClick={() => setActiveTab("activity")}>Atividade</button><button className={activeTab === "files" ? "active" : ""} onClick={() => setActiveTab("files")}>Arquivos{visibleArtifactCount > 0 && <span>{visibleArtifactCount}</span>}</button><button className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>Terminal</button>{preview && <button className={activeTab === "preview" ? "active" : ""} onClick={() => setActiveTab("preview")}>Resultado</button>}</nav>
       <div className="activity-body">
         {activeTab !== "preview" && <label>● {status.toUpperCase()}</label>}
         {activeTab === "activity" && <>
@@ -862,11 +875,19 @@ export default function Home() {
           {diff && <><h2>Últimas alterações</h2><pre className="diff-preview">{diff.slice(-2400)}</pre></>}
         </>}
         {activeTab === "files" && <>
-          <div className="files-heading"><div><h2>Resultados da tarefa</h2><p>Relatórios, documentos, arquivos alterados e pacotes ficam disponíveis aqui.</p></div><button type="button" onClick={() => void refreshWorkspaceResults()} disabled={artifactBusy === "refresh"}>{artifactBusy === "refresh" ? "Buscando…" : "↻ Atualizar"}</button></div>
-          {resultArtifacts.length ? <div className="artifact-list">{resultArtifacts.map(renderArtifactCard)}</div> : <div className="empty-results"><span>◫</span><strong>Nenhum resultado ainda</strong><p>Quando o InDev criar um HTML, PDF, planilha, imagem ou ZIP, ele aparecerá automaticamente aqui.</p></div>}
-          <h2>Arquivos usados</h2>
-          {usedArtifacts.length ? <div className="artifact-list compact">{usedArtifacts.map(renderArtifactCard)}</div> : <p className="muted">Use + para subir um arquivo ou @ para selecionar algo do projeto.</p>}
-          <h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split(/[\\/]/).pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div>
+          <div className="files-heading"><div><h2>Entregas</h2><p>Somente os resultados finais que você pediu aparecem aqui.</p></div><button type="button" onClick={() => void refreshWorkspaceResults()} disabled={artifactBusy === "refresh"}>{artifactBusy === "refresh" ? "Buscando…" : "↻ Sincronizar"}</button></div>
+          {outputArtifacts.length ? <div className="artifact-list">{outputArtifacts.map(renderArtifactCard)}</div> : <div className="empty-results"><span>◫</span><strong>Nenhuma entrega ainda</strong><p>O HTML, PDF, planilha, imagem ou ZIP pedido aparecerá aqui quando estiver pronto.</p></div>}
+          <h2>Enviados</h2>
+          {inputArtifacts.length ? <div className="artifact-list compact">{inputArtifacts.map(renderArtifactCard)}</div> : <p className="muted">Os arquivos que você subir com + ou escolher com @ aparecerão aqui.</p>}
+          <section className={`worker-files ${workersOpen ? "open" : ""}`}>
+            <button className="worker-toggle" type="button" onClick={() => setWorkersOpen((current) => !current)} aria-expanded={workersOpen}>
+              <span><strong>Bastidores</strong><small>Scripts, cópias e arquivos auxiliares</small></span><em>{workerArtifacts.length} {workersOpen ? "⌃" : "⌄"}</em>
+            </button>
+            {workersOpen && <div className="worker-content">
+              {workerArtifacts.length ? <div className="artifact-list compact">{workerArtifacts.map(renderArtifactCard)}</div> : <p className="muted">Nenhum arquivo auxiliar nesta tarefa.</p>}
+              <h2>Área de trabalho</h2><div className="backend-card"><b>{cwd ? cwd.split(/[\\/]/).pop() : "InDev"}</b><span title={cwd}>{cwd || "Aguardando App Server"}</span></div>
+            </div>}
+          </section>
         </>}
         {activeTab === "terminal" && <><h2>Saída do terminal</h2><pre className="terminal-output">{terminal || "Nenhum comando executado nesta tarefa."}</pre></>}
         {activeTab === "preview" && preview && <section className="artifact-preview" aria-label={`Prévia de ${preview.artifact.name}`}>
@@ -954,8 +975,8 @@ export default function Home() {
                 <article><span>▤</span><div><strong>Planilhas .xlsx</strong><p>O original é preservado e o InDev extrai planilhas, linhas e células para um texto legível pelo agente. Para <code>.xls</code> antigo, salve antes como <code>.xlsx</code>.</p></div></article>
                 <article><span>@</span><div><strong>Contexto do projeto</strong><p>Selecione arquivos que já estão no repositório. O caminho absoluto é enviado ao agente para leitura e processamento.</p></div></article>
                 <article><span>×</span><div><strong>Remover antes de enviar</strong><p>Clique no anexo laranja para tirá-lo da próxima mensagem. Isso não apaga o arquivo original do seu computador.</p></div></article>
-                <article><span>◫</span><div><strong>Resultados renderizados</strong><p>HTML, imagens, PDF e texto abrem dentro do painel Resultado. Planilhas, documentos e ZIP ficam disponíveis para download em Arquivos.</p></div></article>
-                <article><span>↓</span><div><strong>Sem caminhos quebrados</strong><p>Quando o agente menciona um arquivo local, o InDev transforma o caminho em um cartão para abrir ou baixar.</p></div></article>
+                <article><span>◫</span><div><strong>Entregas, enviados e bastidores</strong><p>O resultado final fica em Entregas, seus anexos em Enviados e scripts ou arquivos auxiliares em Bastidores, fechado por padrão.</p></div></article>
+                <article><span>↓</span><div><strong>Resultado direto</strong><p>Somente os arquivos citados na resposta final viram cartões para abrir ou baixar. Se você pedir o processo completo, os arquivos auxiliares também podem ser apresentados.</p></div></article>
               </div>
             </section>
 

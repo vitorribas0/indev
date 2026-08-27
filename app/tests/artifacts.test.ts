@@ -7,6 +7,7 @@ import {
   isDeliverableArtifact,
   isPathInsideWorkspace,
   messageWithoutLocalPaths,
+  mergeArtifactRole,
   shouldIgnoreArtifactPath,
 } from "../lib/artifacts";
 
@@ -14,6 +15,13 @@ test("descobre e oculta links absolutos de resultados", () => {
   const message = "Relatório pronto: [Abrir relatório](/Users/vitor/indev/relatorio\\_despesas.html)";
   assert.deepEqual(extractArtifactCandidates(message), [{ label: "Abrir relatório", path: "/Users/vitor/indev/relatorio_despesas.html" }]);
   assert.equal(messageWithoutLocalPaths(message), "Relatório pronto: 📄 Abrir relatório — disponível em Arquivos");
+});
+
+test("mantém entregas acima de entradas e arquivos de bastidor", () => {
+  assert.equal(mergeArtifactRole("worker", "input"), "input");
+  assert.equal(mergeArtifactRole("input", "worker"), "input");
+  assert.equal(mergeArtifactRole("worker", "output"), "output");
+  assert.equal(mergeArtifactRole("output", "input"), "output");
 });
 
 test("reconhece caminhos Windows e mantém o acesso limitado ao projeto", () => {

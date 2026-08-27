@@ -1,9 +1,20 @@
 export type ArtifactKind = "generated" | "modified" | "worked" | "uploaded" | "referenced";
+export type ArtifactRole = "output" | "input" | "worker";
 
 export type ArtifactCandidate = {
   label?: string;
   path: string;
 };
+
+const ARTIFACT_ROLE_PRIORITY: Record<ArtifactRole, number> = {
+  worker: 0,
+  input: 1,
+  output: 2,
+};
+
+export function mergeArtifactRole(current: ArtifactRole, incoming: ArtifactRole) {
+  return ARTIFACT_ROLE_PRIORITY[incoming] > ARTIFACT_ROLE_PRIORITY[current] ? incoming : current;
+}
 
 const OUTPUT_EXTENSIONS = new Set([
   ".html", ".htm", ".pdf", ".zip", ".xlsx", ".xls", ".csv", ".tsv",
