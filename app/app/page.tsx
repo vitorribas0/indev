@@ -36,7 +36,7 @@ type WorkspaceFile = {
 type ActivityEvent = { id: string; kind: string; title: string; detail: string; status: string };
 type StepStatus = "pending" | "inProgress" | "completed";
 type PlanStep = { step: string; status: StepStatus };
-type LiveStep = PlanStep & { id: string };
+type LiveStep = PlanStep & { id: string; detail?: string };
 type Skill = { name: string; description: string; path: string; enabled: boolean };
 type Model = { id: string; model: string; displayName: string; isDefault?: boolean };
 type ThreadSummary = { id: string; preview: string; name?: string | null; updatedAt?: number };
@@ -70,6 +70,9 @@ const slashCommands = [
   ["/skills", "Ver habilidades"],
   ["/status", "Ver conexão"],
 ];
+
+const ATTACHED_FILE_LINE = /^-\s+([^:\n]+):\s+((?:[A-Za-z]:[\\/]|\/)[^\n]+)$/gm;
+const STORED_UPLOAD_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i;
 
 function itemLabel(item: Record<string, unknown>) {
   const type = String(item.type || "atividade");
@@ -111,6 +114,34 @@ async function fileAsBase64(file: File) {
 function joinAgentPath(base: string, ...parts: string[]) {
   const separator = base.includes("\\") ? "\\" : "/";
   return [base.replace(/[\\/]+$/, ""), ...parts.map((part) => part.replace(/^[\\/]+|[\\/]+$/g, ""))].join(separator);
+}
+
+function safeThreadDirectoryName(id: string) {
+  return id.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function threadUploadDirectory(workspace: string, id: string) {
+  return joinAgentPath(workspace, ".indev", "uploads", safeThreadDirectoryName(id));
+}
+
+function storedUploadDisplayName(name: string) {
+  return name.replace(STORED_UPLOAD_PREFIX, "");
+}
+
+function completedStepDetail(item: Record<string, unknown>) {
+  if (item.type === "reasoning") return "O pedido foi analisado e o próximo passo foi definido.";
+  if (item.type === "commandExecution") {
+    const command = String(item.command || "Comando local").slice(0, 500);
+    const output = String(item.aggregatedOutput || "").trim().replace(/\n{3,}/g, "\n\n").slice(-700);
+    return output ? `Comando: ${command}\n\nResultado:\n${output}` : `Comando executado: ${command}`;
+  }
+  if (item.type === "fileChange") {
+    const files = ((item.changes as FileUpdateChange[] | undefined) || []).map((change) => artifactFileName(change.path)).slice(0, 8);
+    return files.length ? `Arquivos trabalhados: ${files.join(", ")}.` : "Os arquivos da tarefa foram atualizados.";
+  }
+  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall") return `Ferramenta concluída: ${String(item.tool || item.server || "tool")}.`;
+  if (item.type === "collabAgentToolCall") return `O agente colaborador concluiu: ${String(item.tool || "atividade delegada")}.`;
+  return "Etapa concluída pelo InDev.";
 }
 
 function resolveAgentPath(base: string, path: string) {
@@ -172,6 +203,7 @@ export default function Home() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [plan, setPlan] = useState<PlanStep[]>([]);
   const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
+  const [selectedStepId, setSelectedStepId] = useState("");
   const [terminal, setTerminal] = useState("");
   const [diff, setDiff] = useState("");
   const [input, setInput] = useState("");
@@ -231,17 +263,17 @@ export default function Home() {
     setWorkersOpen(false);
   }
 
-  function startLiveStep(id: string, step: string, finishRunning = false) {
+  function startLiveStep(id: string, step: string, finishRunning = false, detail = "") {
     setLiveSteps((current) => {
       const prepared = finishRunning ? current.map((entry) => entry.status === "inProgress" ? { ...entry, status: "completed" as const } : entry) : current;
       const existing = prepared.find((entry) => entry.id === id);
-      if (existing) return prepared.map((entry) => entry.id === id ? { ...entry, step, status: "inProgress" } : entry);
-      return [...prepared, { id, step, status: "inProgress" }].slice(-8);
+      if (existing) return prepared.map((entry) => entry.id === id ? { ...entry, step, status: "inProgress", detail: detail || entry.detail } : entry);
+      return [...prepared, { id, step, status: "inProgress", detail }].slice(-10);
     });
   }
 
-  function completeLiveStep(id: string) {
-    setLiveSteps((current) => current.map((entry) => entry.id === id ? { ...entry, status: "completed" } : entry));
+  function completeLiveStep(id: string, detail = "") {
+    setLiveSteps((current) => current.map((entry) => entry.id === id ? { ...entry, status: "completed", detail: detail || entry.detail } : entry));
   }
 
   function rememberArtifact(artifact: ArtifactFile, trackTurn = true) {
@@ -398,6 +430,7 @@ export default function Home() {
     setArtifactBusy("refresh");
     setError("");
     try {
+      await hydrateThreadUploads();
       if (messages.length > 0) {
         const response = await client.request<{ thread: { turns?: ThreadStartResponse["thread"]["turns"] } }>("thread/read", { threadId: activeThreadRef.current, includeTurns: true });
         await hydrateArtifacts(response.thread.turns || []);
@@ -463,6 +496,21 @@ export default function Home() {
     setActiveTab("files");
   }
 
+  async function hydrateThreadUploads() {
+    const client = clientRef.current;
+    const workspace = activeCwdRef.current;
+    const currentThreadId = activeThreadRef.current;
+    if (!client?.connected || !workspace || !currentThreadId) return;
+    try {
+      const result = await client.request<{ entries: FileEntry[] }>("fs/readDirectory", { path: threadUploadDirectory(workspace, currentThreadId) });
+      for (const entry of result.entries || []) {
+        if (!entry.isFile || entry.fileName.endsWith(".indev-context.txt")) continue;
+        const path = joinAgentPath(threadUploadDirectory(workspace, currentThreadId), entry.fileName);
+        await registerArtifactPath(path, "uploaded", undefined, false, "input", storedUploadDisplayName(entry.fileName), true);
+      }
+    } catch { /* o chat pode não ter uploads */ }
+  }
+
   async function hydrateArtifacts(turns: ThreadStartResponse["thread"]["turns"] = []) {
     for (const turn of turns) {
       for (const item of turn.items || []) {
@@ -474,10 +522,18 @@ export default function Home() {
         }
         if (item.type === "agentMessage" && item.text && item.phase === "final_answer") await discoverArtifactsFromText(String(item.text), String(item.id), false);
         if (item.type === "userMessage") {
-          for (const part of (item.content as Array<{ type?: string; path?: string; name?: string }> | undefined) || []) {
+          const content = (item.content as Array<{ type?: string; text?: string; path?: string; name?: string }> | undefined) || [];
+          for (const part of content) {
             if (!part.path || part.path.endsWith(".indev-context.txt")) continue;
             const inputPath = resolveAgentPath(activeCwdRef.current, part.path);
             await registerArtifactPath(inputPath, inputPath.includes(".indev") ? "uploaded" : "referenced", undefined, false, "input", part.name, true);
+          }
+          for (const part of content) {
+            if (!part.text) continue;
+            for (const match of part.text.matchAll(ATTACHED_FILE_LINE)) {
+              const inputPath = resolveAgentPath(activeCwdRef.current, match[2].trim().replace(/\.indev-context\.txt$/, ""));
+              await registerArtifactPath(inputPath, inputPath.includes(".indev") ? "uploaded" : "referenced", undefined, false, "input", match[1].trim(), true);
+            }
           }
         }
       }
@@ -514,7 +570,7 @@ export default function Home() {
     if (method === "item/started") {
       const item = (params.item || {}) as Record<string, unknown>;
       if (item.type === "agentMessage") {
-        if (item.phase === "final_answer") startLiveStep(`response-${String(item.id)}`, "Preparando a resposta", true);
+        if (item.phase === "final_answer") startLiveStep(`response-${String(item.id)}`, "Preparando a resposta", true, "O InDev está organizando o resultado e os arquivos finais.");
         currentAssistantMessageIdRef.current = String(item.id);
         setMessages((current) => current.some((entry) => entry.id === String(item.id)) ? current : [...current, { id: String(item.id), role: "assistant", content: "", streaming: true, phase: (item.phase as MessagePhase | undefined) ?? null }]);
         return;
@@ -523,7 +579,7 @@ export default function Home() {
       const [kind, title, detail] = itemLabel(item);
       const progressId = item.type === "reasoning" ? "analysis" : String(item.id || crypto.randomUUID());
       if (item.type !== "reasoning") completeLiveStep("analysis");
-      startLiveStep(progressId, item.type === "reasoning" ? "Analisando o pedido" : title);
+      startLiveStep(progressId, item.type === "reasoning" ? "Analisando o pedido" : title, false, detail || "Etapa iniciada pelo InDev.");
       setEvents((current) => [{ id: String(item.id || crypto.randomUUID()), kind, title, detail, status: "running" }, ...current]);
       return;
     }
@@ -533,12 +589,12 @@ export default function Home() {
         const messageId = String(item.id);
         const text = String(item.text || "");
         const phase = (item.phase as MessagePhase | undefined) ?? null;
-        if (phase === "final_answer") completeLiveStep(`response-${messageId}`);
+        if (phase === "final_answer") completeLiveStep(`response-${messageId}`, "A resposta final foi preparada e enviada ao chat.");
         currentAssistantMessageIdRef.current = messageId;
         setMessages((current) => current.map((entry) => entry.id === messageId ? { ...entry, content: text || entry.content, streaming: false, phase } : entry));
         if (text && phase === "final_answer") void discoverArtifactsFromText(text, messageId);
       } else {
-        completeLiveStep(item.type === "reasoning" ? "analysis" : String(item.id));
+        completeLiveStep(item.type === "reasoning" ? "analysis" : String(item.id), completedStepDetail(item));
         setEvents((current) => current.map((entry) => entry.id === String(item.id) ? { ...entry, status: String(item.status || "completed"), detail: item.type === "commandExecution" ? String(item.aggregatedOutput || entry.detail) : entry.detail } : entry));
         if (item.type === "commandExecution" && item.aggregatedOutput) {
           const commandOutput = String(item.aggregatedOutput);
@@ -563,7 +619,13 @@ export default function Home() {
       return;
     }
     if (method === "turn/plan/updated") {
-      setPlan((params.plan as PlanStep[]) || []);
+      const nextPlan = (params.plan as PlanStep[]) || [];
+      setPlan(nextPlan);
+      setLiveSteps((current) => {
+        const operations = current.filter((entry) => !entry.id.startsWith("plan-") && entry.id !== "analysis");
+        const planned = nextPlan.map((step, index) => ({ ...step, id: `plan-${index}`, detail: `Etapa planejada pelo agente: ${step.step}.` }));
+        return [...planned, ...operations].slice(-10);
+      });
       completeLiveStep("analysis");
       return;
     }
@@ -601,7 +663,7 @@ export default function Home() {
 
   async function createCodexThread(client = clientRef.current) {
     if (!client?.connected) return;
-    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); setLiveSteps([]); resetArtifacts(); setActiveTab("activity");
+    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); setLiveSteps([]); setSelectedStepId(""); resetArtifacts(); setActiveTab("activity");
     const response = await client.request<ThreadStartResponse>("thread/start", {
       model: model || undefined,
       approvalPolicy: "on-request",
@@ -644,8 +706,9 @@ export default function Home() {
       const response = await client.request<ThreadStartResponse>("thread/resume", { threadId: id, approvalPolicy: "on-request", sandbox });
       const workspace = response.cwd || response.thread.cwd;
       activeThreadRef.current = response.thread.id; activeCwdRef.current = workspace; setThreadId(response.thread.id); setCwd(workspace); setModel(response.model);
-      setMessages(messagesFromTurns(response.thread.turns)); setEvents([]); setPlan([]); setLiveSteps([]); setTerminal(""); setDiff(""); setStatus("Pronto");
+      setMessages(messagesFromTurns(response.thread.turns)); setEvents([]); setPlan([]); setLiveSteps([]); setSelectedStepId(""); setTerminal(""); setDiff(""); setStatus("Pronto");
       await watchWorkspace(client, workspace, response.thread.id);
+      await hydrateThreadUploads();
       await hydrateArtifacts(response.thread.turns);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Não foi possível abrir a tarefa."); setStatus("Aguardando"); }
   }
@@ -660,6 +723,7 @@ export default function Home() {
     activeTurnIdRef.current = "";
     setPlan([]);
     setLiveSteps([{ id: "analysis", step: "Analisando o pedido", status: "inProgress" }]);
+    setSelectedStepId("");
     turnStartedAtRef.current = currentTimeMs();
     turnArtifactPathsRef.current.clear();
     currentAssistantMessageIdRef.current = "";
@@ -755,8 +819,7 @@ export default function Home() {
       }
       if (engine === "codex" && clientRef.current?.connected && cwd) {
         const safeName = selected.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const safeThreadId = threadId.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const uploadDir = joinAgentPath(cwd, ".indev", "uploads", safeThreadId);
+        const uploadDir = threadUploadDirectory(cwd, threadId);
         const path = joinAgentPath(uploadDir, `${crypto.randomUUID()}-${safeName}`);
         await clientRef.current.request("fs/createDirectory", { path: uploadDir, recursive: true });
         await clientRef.current.request("fs/writeFile", { path, dataBase64: await fileAsBase64(selected) }, 60_000);
@@ -881,7 +944,7 @@ export default function Home() {
   const inputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "input" && artifact.threadInput), [artifacts]);
   const workerArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "worker"), [artifacts]);
   const visibleArtifactCount = outputArtifacts.length + inputArtifacts.length;
-  const displayedSteps: LiveStep[] = plan.length ? plan.map((step, index) => ({ ...step, id: `plan-${index}` })) : liveSteps;
+  const displayedSteps: LiveStep[] = liveSteps.length ? liveSteps : plan.map((step, index) => ({ ...step, id: `plan-${index}`, detail: `Etapa planejada pelo agente: ${step.step}.` }));
   const title = messages.find((message) => message.role === "user")?.content.slice(0, 48) || "Nova tarefa InDev";
 
   return <main className={`app-shell ${activeTab === "preview" && preview ? "result-view" : ""}`}>
@@ -945,7 +1008,17 @@ export default function Home() {
       <div className="activity-body">
         {activeTab !== "preview" && <label>● {status.toUpperCase()}</label>}
         {activeTab === "activity" && <>
-          <h2>Passos</h2>{displayedSteps.length ? <div className="plan-list">{displayedSteps.map((step) => <div className={`plan-step ${step.status}`} key={step.id}><span>{step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}</span><div><strong>{step.step}</strong><small>{step.status === "completed" ? "Concluído" : step.status === "inProgress" ? "Em andamento" : "Aguardando"}</small></div></div>)}</div> : <p className="muted">Os passos aparecerão e serão marcados conforme o InDev trabalha.</p>}
+          <h2>Passos</h2>{displayedSteps.length ? <div className="plan-list">{displayedSteps.map((step) => {
+            const expanded = selectedStepId === step.id;
+            return <div className={`plan-step-wrap ${expanded ? "expanded" : ""}`} key={step.id}>
+              <button className={`plan-step ${step.status}`} type="button" onClick={() => setSelectedStepId(expanded ? "" : step.id)} aria-expanded={expanded}>
+                <span>{step.status === "completed" ? "✓" : step.status === "inProgress" ? "●" : "○"}</span>
+                <div><strong>{step.step}</strong><small>{step.status === "completed" ? "Concluído" : step.status === "inProgress" ? "Em andamento" : "Aguardando"}</small></div>
+                <em>{expanded ? "⌃" : "⌄"}</em>
+              </button>
+              {expanded && <div className="plan-detail"><span>O QUE FOI FEITO</span><p>{step.detail || "O InDev ainda não registrou detalhes adicionais para esta etapa."}</p></div>}
+            </div>;
+          })}</div> : <p className="muted">Os passos aparecerão e serão marcados conforme o InDev trabalha.</p>}
           <h2>Execuções</h2>{events.length ? events.map((entry) => <div className="event-card" key={entry.id}><span className={entry.status}></span><div><b>{entry.title}</b><small>{entry.detail || entry.status}</small></div></div>) : <p className="muted">Tools e comandos aparecerão aqui em tempo real.</p>}
           {diff && <><h2>Últimas alterações</h2><pre className="diff-preview">{diff.slice(-2400)}</pre></>}
         </>}
@@ -1063,7 +1136,7 @@ export default function Home() {
               </div>
               <div className="manual-timeline">
                 <article><b>Pedido</b><span></span><p>Você define o resultado.</p></article>
-                <article><b>Passos</b><span></span><p>As etapas aparecem e mudam de aguardando para em andamento e concluído conforme o agente trabalha.</p></article>
+                <article><b>Passos</b><span></span><p>As etapas mudam de aguardando para em andamento e concluído. Clique em uma delas para ver o comando, a ferramenta, os arquivos ou o resultado registrado.</p></article>
                 <article><b>Tools</b><span></span><p>Lê arquivos e executa ações permitidas.</p></article>
                 <article><b>Validação</b><span></span><p>Testes e saídas aparecem no painel.</p></article>
                 <article><b>Resposta</b><p>Você recebe o resultado e as alterações.</p></article>
