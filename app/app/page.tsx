@@ -108,9 +108,21 @@ export default function Home() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [account, setAccount] = useState("Conta local");
+  const [manualOpen, setManualOpen] = useState(false);
 
   useEffect(() => { activeThreadRef.current = threadId; }, [threadId]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, busy]);
+  useEffect(() => {
+    if (!manualOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setManualOpen(false); };
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [manualOpen]);
 
   useEffect(() => {
     const client = new CodexAppClient();
@@ -428,6 +440,7 @@ export default function Home() {
         {threads.filter((thread) => thread.id !== threadId).slice(0, 8).map((thread) => <button className="task" key={thread.id} onClick={() => resumeThread(thread.id)}>{thread.name || thread.preview || "Tarefa sem título"}</button>)}
       </div>
       <div className="side-bottom">
+        <button onClick={() => setManualOpen(true)}>？ Manual do InDev</button>
         <button onClick={() => setMenu(menu === "slash" ? null : "slash")}>⌘ Comandos</button>
         <button onClick={() => setMenu(menu === "settings" ? null : "settings")}>⚙ Configurações</button>
         <div className="user">V <span>Vitor<br/><small>{account}</small></span></div>
@@ -437,7 +450,7 @@ export default function Home() {
     <section className="conversation">
       <header>
         <div><h1>{title}</h1><p><i className={engine}></i> {status} · {engine === "codex" ? "Codex App Server" : engine === "responses" ? "OpenAI API (reserva)" : "ambiente local"}</p></div>
-        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option>gpt-5.4</option>}</select><button onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
+        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option>gpt-5.4</option>}</select><button className="header-help" aria-label="Abrir manual do InDev" title="Manual do InDev" onClick={() => setManualOpen(true)}>?</button><button aria-label="Abrir configurações" onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
       </header>
 
       <div className="chat">
@@ -484,5 +497,119 @@ export default function Home() {
         <h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "Responses API" : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${sandbox}` : "Reserva segura"}</span></div>
       </div>
     </aside>
+
+    {manualOpen && <div className="manual-overlay">
+      <section className="manual-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-title">
+        <header className="manual-header">
+          <div className="manual-brand"><span>?</span><div><small>GUIA INTEGRADO · VERSÃO 0.3.1</small><h2 id="manual-title">Manual do InDev</h2><p>Do primeiro pedido às skills, arquivos, tools e segurança.</p></div></div>
+          <button className="manual-close" aria-label="Fechar manual" title="Fechar (Esc)" onClick={() => setManualOpen(false)}>×</button>
+        </header>
+
+        <div className="manual-layout">
+          <nav className="manual-nav" aria-label="Capítulos do manual">
+            <a href="#manual-start">Começo rápido</a>
+            <a href="#manual-composer">Barra do chat</a>
+            <a href="#manual-commands">Comandos</a>
+            <a href="#manual-skills">Skills</a>
+            <a href="#manual-files">Arquivos e Excel</a>
+            <a href="#manual-tools">Tools e execução</a>
+            <a href="#manual-security">Segurança</a>
+            <a href="#manual-help">Ajuda</a>
+          </nav>
+
+          <div className="manual-content">
+            <section className="manual-hero" id="manual-start">
+              <div><span className="manual-kicker">COMECE AQUI</span><h3>Você descreve o resultado. O InDev cuida das etapas.</h3><p>Peça para criar, corrigir, analisar ou explicar algo. Quando a tarefa exigir código, o agente pode ler o projeto, usar ferramentas, executar testes e mostrar cada atividade no painel direito.</p></div>
+              <div className="manual-status-card"><span className={`manual-engine ${engine}`}></span><div><small>MOTOR DESTA SESSÃO</small><strong>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "OpenAI API — reserva" : "Conectando"}</strong><p>{engine === "codex" ? "Skills, terminal e arquivos locais disponíveis." : "Alguns recursos locais dependem do App Server."}</p></div></div>
+            </section>
+
+            <div className="manual-steps">
+              <article><b>1</b><span><strong>Explique o objetivo</strong>Diga o que deve ficar pronto e como você quer validar.</span></article>
+              <article><b>2</b><span><strong>Dê contexto</strong>Use <code>+</code> para enviar ou <code>@</code> para citar um arquivo do projeto.</span></article>
+              <article><b>3</b><span><strong>Escolha uma skill</strong>Use <code>✦</code> quando quiser aplicar um fluxo especializado.</span></article>
+              <article><b>4</b><span><strong>Acompanhe</strong>Veja plano, execuções, alterações e terminal no painel direito.</span></article>
+            </div>
+
+            <section className="manual-section" id="manual-composer">
+              <div className="manual-section-title"><span>01</span><div><h3>Barra do chat</h3><p>Os quatro atalhos antes do campo de mensagem.</p></div></div>
+              <div className="manual-control-grid">
+                <article><kbd>＋</kbd><div><strong>Subir arquivo</strong><p>Armazena uma cópia dentro da tarefa e a anexa à próxima mensagem.</p></div></article>
+                <article><kbd>@</kbd><div><strong>Arquivo do projeto</strong><p>Adiciona um arquivo ou pasta existente como contexto, sem duplicá-lo.</p></div></article>
+                <article><kbd>/</kbd><div><strong>Comandos</strong><p>Executa controles rápidos, como nova tarefa, status e compactação.</p></div></article>
+                <article><kbd>✦</kbd><div><strong>Skills</strong><p>Seleciona instruções especializadas para a próxima solicitação.</p></div></article>
+              </div>
+              <div className="manual-actions"><button onClick={() => { setManualOpen(false); setMenu("slash"); }}>Abrir comandos</button><button onClick={() => { setManualOpen(false); void openFileMenu(); }}>Ver arquivos do projeto</button></div>
+            </section>
+
+            <section className="manual-section" id="manual-commands">
+              <div className="manual-section-title"><span>02</span><div><h3>Comandos disponíveis no InDev</h3><p>Digite o comando no campo e envie, ou escolha no menu <code>/</code>.</p></div></div>
+              <div className="manual-command-list">
+                {slashCommands.map(([command, description]) => <article key={command}><code>{command}</code><div><strong>{description}</strong><p>{command === "/new" ? "Abre uma tarefa limpa, com contexto e anexos separados." : command === "/interrupt" ? "Pede ao agente para parar a execução atual." : command === "/compact" ? "Resume uma conversa longa para liberar espaço de contexto sem perder o essencial." : command === "/skills" ? "Abre o seletor de habilidades disponíveis nesta instalação." : "Mostra se o App Server está conectado e qual área de trabalho está ativa."}</p></div></article>)}
+              </div>
+              <aside className="manual-note"><strong>Importante</strong><p>O Codex original possui outros comandos. Esta lista mostra somente os cinco que a interface atual do InDev implementa e testa.</p></aside>
+            </section>
+
+            <section className="manual-section" id="manual-skills">
+              <div className="manual-section-title"><span>03</span><div><h3>Skills: fluxos que o agente sabe repetir</h3><p>Uma skill reúne instruções, referências, recursos e scripts opcionais para uma tarefa específica.</p></div></div>
+              <div className="manual-two-columns">
+                <article className="manual-card"><span className="manual-chip">USAR</span><h4>Selecionar uma skill</h4><ol><li>Clique em <code>✦</code> ou envie <code>/skills</code>.</li><li>Escolha a habilidade desejada.</li><li>Ela aparece como anexo laranja.</li><li>Escreva o pedido e envie.</li></ol><p>O motor também pode escolher uma skill automaticamente quando a descrição dela combina claramente com a tarefa.</p></article>
+                <article className="manual-card"><span className="manual-chip">CRIAR</span><h4>Skill que viaja com o repositório</h4><p>Crie esta estrutura na raiz do projeto:</p><pre><code>{`.agents/skills/minha-skill/\n├── SKILL.md\n├── scripts/       opcional\n├── references/    opcional\n└── assets/        opcional`}</code></pre><p>Por estar dentro do repositório, ela funciona também em outro computador depois do clone.</p></article>
+              </div>
+              <div className="manual-code-block"><div><span>SKILL.md mínimo</span><small>nome e descrição são obrigatórios</small></div><pre><code>{`---\nname: revisar-api\ndescription: Revise APIs HTTP, encontre riscos e proponha testes. Use em pedidos de revisão de endpoints.\n---\n\n# Fluxo\n1. Leia as rotas e os testes existentes.\n2. Verifique autenticação, validação e erros.\n3. Entregue achados por prioridade.\n4. Só altere arquivos quando o usuário pedir.`}</code></pre></div>
+              <aside className="manual-note"><strong>Como escrever uma boa descrição</strong><p>Diga quando a skill deve e não deve ser usada. É essa descrição que ajuda o agente a decidir se o fluxo combina com o pedido. Alterações são detectadas automaticamente; se a skill não aparecer, reinicie o InDev.</p></aside>
+              <div className="manual-actions"><button onClick={() => { setManualOpen(false); setMenu("skills"); }}>Abrir seletor de skills</button><a href="https://developers.openai.com/codex/skills" target="_blank" rel="noreferrer">Documentação oficial ↗</a></div>
+            </section>
+
+            <section className="manual-section" id="manual-files">
+              <div className="manual-section-title"><span>04</span><div><h3>Arquivos, imagens e Excel</h3><p>O contexto anexado vale para a próxima mensagem e permanece armazenado na área local da tarefa.</p></div></div>
+              <div className="manual-feature-list">
+                <article><span>＋</span><div><strong>Upload</strong><p>Arquivos de até 12 MB. O InDev guarda o original em <code>.indev/uploads</code> dentro da área de trabalho.</p></div></article>
+                <article><span>▤</span><div><strong>Planilhas .xlsx</strong><p>O original é preservado e o InDev extrai planilhas, linhas e células para um texto legível pelo agente. Para <code>.xls</code> antigo, salve antes como <code>.xlsx</code>.</p></div></article>
+                <article><span>@</span><div><strong>Contexto do projeto</strong><p>Selecione arquivos que já estão no repositório. O caminho absoluto é enviado ao agente para leitura e processamento.</p></div></article>
+                <article><span>×</span><div><strong>Remover antes de enviar</strong><p>Clique no anexo laranja para tirá-lo da próxima mensagem. Isso não apaga o arquivo original do seu computador.</p></div></article>
+              </div>
+            </section>
+
+            <section className="manual-section" id="manual-tools">
+              <div className="manual-section-title"><span>05</span><div><h3>Tools, terminal e execução</h3><p>Skills ensinam o processo; tools dão ao agente uma capacidade executável.</p></div></div>
+              <div className="manual-comparison">
+                <article><span>✦ SKILL</span><h4>Instrução reutilizável</h4><p>Define etapas, critérios, referências e scripts. Não cria sozinha acesso a um serviço externo.</p></article>
+                <article><span>⌁ TOOL</span><h4>Ação conectada ao motor</h4><p>Lê ou altera arquivos, roda comandos, pesquisa ou chama um serviço. O uso aparece em Atividade.</p></article>
+              </div>
+              <div className="manual-timeline">
+                <article><b>Pedido</b><span></span><p>Você define o resultado.</p></article>
+                <article><b>Plano</b><span></span><p>O agente organiza etapas quando necessário.</p></article>
+                <article><b>Tools</b><span></span><p>Lê arquivos e executa ações permitidas.</p></article>
+                <article><b>Validação</b><span></span><p>Testes e saídas aparecem no painel.</p></article>
+                <article><b>Resposta</b><p>Você recebe o resultado e as alterações.</p></article>
+              </div>
+              <aside className="manual-note"><strong>Cadastro de novas tools</strong><p>A interface atual ainda não possui um formulário para registrar tools. Isso exige integrar uma ferramenta ao App Server, normalmente por MCP, plugin ou código do backend. Uma skill pode ensinar quando usar a tool, mas não substitui essa conexão.</p></aside>
+            </section>
+
+            <section className="manual-section" id="manual-security">
+              <div className="manual-section-title"><span>06</span><div><h3>Segurança, sandbox e aprovações</h3><p>Você controla quanto o agente pode fazer na próxima tarefa.</p></div></div>
+              <div className="manual-security-grid">
+                <article><span>RECOMENDADO</span><h4>Workspace write</h4><p>Pode ler e editar a área do projeto. Ações protegidas podem pedir sua aprovação antes de continuar.</p></article>
+                <article><span>INSPEÇÃO</span><h4>Somente leitura</h4><p>Permite analisar e explicar sem alterar os arquivos do projeto.</p></article>
+                <article><span>VOCÊ DECIDE</span><h4>Aprovar uma vez</h4><p>Quando surgir um cartão de confirmação, aceite apenas se reconhecer e desejar aquela ação.</p></article>
+              </div>
+              <p className="manual-fine-print">A mudança de sandbox entra em vigor ao criar ou reabrir uma tarefa. Chaves de API ficam no arquivo local de ambiente e não devem ser enviadas ao Git.</p>
+              <div className="manual-actions"><button onClick={() => { setManualOpen(false); setMenu("settings"); }}>Abrir segurança</button></div>
+            </section>
+
+            <section className="manual-section" id="manual-help">
+              <div className="manual-section-title"><span>07</span><div><h3>Quando algo não funcionar</h3><p>Verificações rápidas antes de tentar novamente.</p></div></div>
+              <div className="manual-help-grid">
+                <article><strong>Sem resposta da IA</strong><p>Envie <code>/status</code>. Se o App Server estiver desconectado, confira a chave local e reinicie o InDev.</p></article>
+                <article><strong>Skill não aparece</strong><p>Confirme o arquivo <code>.agents/skills/nome/SKILL.md</code>, incluindo <code>name</code> e <code>description</code>, e reinicie.</p></article>
+                <article><strong>Excel não foi lido</strong><p>Use <code>.xlsx</code>, confirme o resumo mostrado no anexo e diga claramente quais abas ou colunas devem ser analisadas.</p></article>
+                <article><strong>A tarefa está longa</strong><p>Use <code>/compact</code> para resumir o histórico e manter os pontos importantes no contexto.</p></article>
+              </div>
+              <aside className="manual-available"><div><span>O QUE FUNCIONA HOJE</span><p>Chat em streaming, modelos, histórico de tarefas, uploads e Excel, arquivos do projeto, skills, cinco comandos, sandbox, aprovações, plano, tools, terminal e diff.</p></div><div><span>AINDA NÃO TEM INTERFACE PRÓPRIA</span><p>Loja de plugins, cadastro visual de MCP/tools, execução em nuvem e todos os comandos existentes no Codex original.</p></div></aside>
+            </section>
+          </div>
+        </div>
+      </section>
+    </div>}
   </main>;
 }
