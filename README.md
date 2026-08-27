@@ -2,6 +2,138 @@
 
 Espaço para transformar a ideia do InDev em um produto claro, útil e construível.
 
+## Como usar esta branch — OpenAI/Codex
+
+Esta é a branch principal do InDev. Ela executa o Codex App Server incluído no próprio repositório e usa a OpenAI como provedora de LLM. Não é necessário instalar o Codex Desktop nem um comando `codex` global.
+
+### 1. Pré-requisitos
+
+- Git.
+- Node.js 22.13 ou superior, acompanhado do npm.
+- Internet para instalar as dependências e acessar os modelos.
+- Uma conta compatível com o login do Codex ou uma chave `OPENAI_API_KEY`.
+
+Esta branch não usa Python, `pip` ou Artifactory. Para o provedor Iara, use a branch [`indev-iara`](https://github.com/vitorribas0/indev/tree/indev-iara), cujo README contém as instruções corporativas.
+
+### 2. Clonar a branch correta
+
+```bash
+git clone --branch main https://github.com/vitorribas0/indev.git
+cd indev
+```
+
+Se o repositório já existe:
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only
+```
+
+### 3. Instalar as dependências
+
+No Windows PowerShell, macOS ou Linux:
+
+```bash
+cd app
+npm ci
+```
+
+O `npm ci` lê o `package-lock.json` e instala as versões exatas, inclusive o pacote `@openai/codex` apropriado para Windows, macOS ou Linux.
+
+### 4. Escolher a autenticação
+
+#### Opção A — login seguro do Codex
+
+Dentro de `app`:
+
+```bash
+npm run setup
+```
+
+Se ainda não houver uma sessão, o comando abre o fluxo de login. Os dados privados ficam em `.indev/codex-home` dentro do clone e não são enviados ao Git.
+
+#### Opção B — chave da API
+
+No Windows PowerShell, a partir da raiz do repositório:
+
+```powershell
+Copy-Item app\.env.example app\.env.local
+```
+
+No macOS ou Linux:
+
+```bash
+cp app/.env.example app/.env.local
+```
+
+Preencha `app/.env.local`:
+
+```env
+OPENAI_API_KEY=SUA_CHAVE
+OPENAI_MODEL=gpt-5.6-luna
+OPENAI_MASSIVA_MODEL=gpt-5.6-luna
+```
+
+Nunca envie o `.env.local` ao Git. Ele já está ignorado pelo projeto.
+
+A conversa principal aceita o login do Codex ou a chave. A tool `analise_massiva_llm`, que realiza uma chamada por linha da planilha, exige `OPENAI_API_KEY` porque usa a API diretamente e mostra uma confirmação de custo antes de executar.
+
+### 5. Rodar o sistema no terminal
+
+Dentro de `app`:
+
+```bash
+npm run dev
+```
+
+Abra `http://localhost:3001`. O sistema permanece local; esse comando não publica nenhum site.
+
+O processo inicia automaticamente:
+
+1. Codex App Server local.
+2. Ponte segura entre o navegador e o App Server.
+3. Interface InDev.
+
+### 6. Inicializadores por sistema operacional
+
+Depois do clone, também é possível iniciar pela raiz do projeto:
+
+- Windows CMD: dê dois cliques em `start-indev.cmd` ou execute `start-indev.cmd`.
+- Windows PowerShell: `.\start-indev.ps1`.
+- macOS ou Linux: `./start-indev.sh`.
+
+Os inicializadores instalam as dependências, validam a autenticação e iniciam o InDev. Eles não publicam a aplicação.
+
+### 7. Confirmar que está tudo funcionando
+
+Dentro de `app`:
+
+```bash
+npm run doctor
+npm run lint
+npm test
+```
+
+Para o teste de ponta a ponta com uma resposta real do modelo:
+
+```bash
+npm run test:e2e
+```
+
+O último comando usa a conta ou chave configurada e pode consumir tokens.
+
+### 8. Solução rápida de problemas
+
+- **Node incompatível:** confirme `node --version`; é necessário 22.13 ou superior.
+- **Login ausente:** execute `npm run setup` novamente.
+- **API key ausente na análise massiva:** preencha `OPENAI_API_KEY` em `app/.env.local`.
+- **Porta ocupada:** encerre outra execução do InDev; as portas padrão são 3001, 4501 e 4502.
+- **Dependência corrompida:** dentro de `app`, execute novamente `npm ci`.
+- **Windows bloqueou o script PowerShell:** use `start-indev.cmd` ou execute os comandos `npm ci`, `npm run setup` e `npm run dev` diretamente no terminal.
+
+Histórico operacional e uploads ficam em `.indev/`; credenciais ficam em `app/.env.local` ou no armazenamento privado do Codex. Ambos são ignorados pelo Git.
+
 ## Em uma frase
 
 > O InDev será um ambiente de desenvolvimento com IA capaz de entender um projeto, planejar mudanças, escrever código, testar e revisar entregas — com uma experiência tão boa quanto ou melhor que a do Codex.
