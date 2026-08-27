@@ -82,7 +82,7 @@ function toolContext(body) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
   if (request.url === "/readyz") {
-    json(response, 200, { ready: true, upstream: runtime.appServerWs });
+    json(response, 200, { ready: true, upstream: runtime.appServerWs, provider: runtime.llmProvider, model: runtime.defaultModel });
     return;
   }
   if (!request.headers.origin || !allowedOrigins.has(request.headers.origin)) {
@@ -96,6 +96,24 @@ const server = createServer(async (request, response) => {
   }
   if (request.method === "GET" && url.pathname === "/tools/catalog") {
     json(response, 200, { tools: toolCatalog() }, headers);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/provider/status") {
+    let health = null;
+    if (runtime.llmProvider === "iara") {
+      health = await fetch(runtime.iaraProxyReady, { signal: AbortSignal.timeout(1_500) })
+        .then((result) => result.json())
+        .catch(() => null);
+    }
+    json(response, 200, {
+      id: runtime.llmProvider,
+      label: runtime.providerLabel,
+      defaultModel: runtime.defaultModel,
+      models: runtime.availableModels,
+      environment: runtime.llmProvider === "iara" ? runtime.iaraEnvironment : undefined,
+      backend: runtime.llmProvider === "iara" ? runtime.iaraProvider : undefined,
+      healthy: runtime.llmProvider === "openai" || Boolean(health?.ready),
+    }, headers);
     return;
   }
   if (request.method === "POST" && (url.pathname === "/tools/preview" || url.pathname === "/tools/execute")) {

@@ -28,6 +28,16 @@ export type ToolExecutionResult = {
   [key: string]: unknown;
 };
 
+export type InDevProviderStatus = {
+  id: "openai" | "iara";
+  label: string;
+  defaultModel: string;
+  models: string[];
+  environment?: string;
+  backend?: string;
+  healthy: boolean;
+};
+
 const TOOL_SERVER = "http://127.0.0.1:4502";
 
 async function toolRequest<T>(path: string, body?: unknown) {
@@ -43,6 +53,10 @@ async function toolRequest<T>(path: string, body?: unknown) {
 
 export async function loadInDevToolCatalog() {
   return toolRequest<{ tools: Array<{ spec: DynamicToolSpec; approval: { required: boolean; title?: string } }> }>("/tools/catalog");
+}
+
+export async function loadInDevProviderStatus() {
+  return toolRequest<InDevProviderStatus>("/provider/status");
 }
 
 export async function previewInDevTool(invocation: ToolInvocation) {

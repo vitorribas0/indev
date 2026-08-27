@@ -3,9 +3,10 @@ import { createServer } from "node:net";
 import {
   appRoot,
   assertLocalDependencies,
-  codexEntrypoint,
+  codexAppServerArgs,
   ensureRuntimeFolders,
   getRuntimeConfig,
+  iaraServerEntrypoint,
   loadLocalEnvironment,
   vinextEntrypoint,
   workspaceRoot,
@@ -44,6 +45,15 @@ async function bridgeIsReady() {
   }
 }
 
+async function iaraProxyIsReady() {
+  try {
+    const response = await fetch(runtime.iaraProxyReady, { signal: AbortSignal.timeout(700) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function waitUntil(check, label) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await check()) return;
@@ -61,14 +71,22 @@ function start(command, args, cwd, label) {
 
 let web;
 try {
-  for (const [label, port] of [["interface", runtime.webPort], ["App Server", runtime.appServerPort], ["ponte", runtime.bridgePort]]) {
+  const localPorts = [["interface", runtime.webPort], ["App Server", runtime.appServerPort], ["ponte", runtime.bridgePort]];
+  if (runtime.llmProvider === "iara") localPorts.push(["adaptador Iara", runtime.iaraProxyPort]);
+  for (const [label, port] of localPorts) {
     if (!await portIsAvailable(port)) {
       throw new Error(`A porta ${port} do ${label} já está em uso. Feche a outra execução do InDev e tente novamente.`);
     }
   }
 
-  console.log(`[indev] Motor incluído no projeto: ${codexEntrypoint}`);
-  start(process.execPath, [codexEntrypoint, "app-server", "--listen", runtime.appServerWs], workspaceRoot, "codex");
+  console.log(`[indev] Provedor de LLM: ${runtime.providerLabel} · ${runtime.defaultModel}`);
+  if (runtime.llmProvider === "iara") {
+    start(runtime.iaraPython, [iaraServerEntrypoint], appRoot, "iara");
+    await waitUntil(iaraProxyIsReady, "Adaptador local da Iara");
+  }
+
+  console.log("[indev] Codex App Server incluído no projeto carregado.");
+  start(process.execPath, codexAppServerArgs(runtime), workspaceRoot, "codex");
   await waitUntil(appServerIsReady, "Codex App Server");
 
   start(process.execPath, ["scripts/codex-bridge.mjs"], appRoot, "bridge");

@@ -2,9 +2,10 @@ import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import ExcelJS from "exceljs";
 import OpenAI from "openai";
+import { resolveLlmProvider } from "../../lib/llm-provider.mjs";
 
 export const MAX_MASSIVA_ROWS = 8_000;
-export const DEFAULT_MASSIVA_MODEL = "gpt-5.6-luna";
+export const DEFAULT_MASSIVA_MODEL = resolveLlmProvider().massivaModel;
 const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 10;
 const MAX_WORKBOOK_BYTES = 100 * 1024 * 1024;
@@ -23,7 +24,7 @@ export const tool = {
         coluna_texto: { type: "string", description: "Cabeçalho da coluna que contém o texto a analisar." },
         colunas_saida: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" }, description: "Cabeçalhos das colunas que o modelo deve preencher." },
         contexto: { type: "string", minLength: 3, description: "Critério, política ou instrução usada para analisar cada linha." },
-        modelo: { type: "string", description: "Modelo OpenAI para cada linha. O padrão econômico é gpt-5.6-luna." },
+        modelo: { type: "string", description: "Modelo do provedor configurado para cada linha. Se omitido, usa o modelo econômico definido no .env." },
         limite: { type: "integer", minimum: 0, maximum: 8000, description: "Quantidade máxima de linhas. Zero ou ausência significa todas, até 8.000." },
         concorrencia: { type: "integer", minimum: 1, maximum: 10, description: "Chamadas simultâneas. Padrão 4; máximo 10." },
       },
@@ -155,13 +156,14 @@ async function inspectWorkbook(args, context) {
     totalRows: candidateRows.length,
     outputColumns,
     criteria,
-    model: cleanString(args.modelo) || process.env.OPENAI_MASSIVA_MODEL || DEFAULT_MASSIVA_MODEL,
+    model: cleanString(args.modelo) || resolveLlmProvider().massivaModel,
     concurrency: integerInRange(args.concorrencia, DEFAULT_CONCURRENCY, 1, MAX_CONCURRENCY),
   };
 }
 
 export async function createMassivaPlan(args, context) {
   const inspected = await inspectWorkbook(args, context);
+  const provider = resolveLlmProvider();
   return {
     approvalRequired: true,
     title: "Confirmar análise massiva",
@@ -170,7 +172,7 @@ export async function createMassivaPlan(args, context) {
       `Arquivo: ${basename(inspected.candidate)}`,
       `Coluna de entrada: ${cleanString(args.coluna_texto)}`,
       `Colunas de saída: ${inspected.outputColumns.join(", ")}`,
-      `Dados enviados: conteúdo da coluna '${cleanString(args.coluna_texto)}' para a API da OpenAI`,
+      `Dados enviados: conteúdo da coluna '${cleanString(args.coluna_texto)}' para o provedor ${provider.label}`,
       `Custo: aproximadamente ${inspected.selectedRows.length} chamadas de modelo`,
       `Paralelismo: ${inspected.concurrency} por vez`,
     ],
@@ -201,8 +203,8 @@ async function withRetries(operation, attempts = 3) {
   throw lastError;
 }
 
-function createOpenAIClassifier({ apiKey, model, outputColumns, criteria }) {
-  const client = new OpenAI({ apiKey, timeout: 120_000, maxRetries: 0 });
+function createProviderClassifier({ apiKey, baseURL, model, outputColumns, criteria }) {
+  const client = new OpenAI({ apiKey, baseURL, timeout: 120_000, maxRetries: 0 });
   const schema = structuredOutputSchema(outputColumns);
   return async ({ text }) => {
     const response = await withRetries(() => client.responses.create({
@@ -254,14 +256,15 @@ async function classifyInParallel(rows, concurrency, classifier, onProgress) {
 
 export async function executeMassiva(args, context, dependencies = {}) {
   const inspected = await inspectWorkbook(args, context);
-  const apiKey = process.env.OPENAI_API_KEY;
-  const classifier = dependencies.classifier || (apiKey ? createOpenAIClassifier({
-    apiKey,
+  const provider = resolveLlmProvider();
+  const classifier = dependencies.classifier || (provider.apiKey ? createProviderClassifier({
+    apiKey: provider.apiKey,
+    baseURL: provider.baseURL,
     model: inspected.model,
     outputColumns: inspected.outputColumns,
     criteria: inspected.criteria,
   }) : null);
-  if (!classifier) throw new Error("Configure OPENAI_API_KEY em app/.env.local para executar a análise massiva.");
+  if (!classifier) throw new Error(`Configure as credenciais do provedor ${provider.label} em app/.env.local para executar a análise massiva.`);
 
   const results = await classifyInParallel(inspected.selectedRows, inspected.concurrency, classifier, context.onProgress);
   const outputIndexes = resolveOutputColumnIndexes(inspected.worksheet, inspected.headerRowNumber, inspected.headers, inspected.outputColumns);

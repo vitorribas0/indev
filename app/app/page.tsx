@@ -20,11 +20,13 @@ import {
 import { extractSpreadsheetContext, isExcelWorkbook, isLegacyExcelWorkbook, type SpreadsheetContext } from "@/lib/spreadsheet-context";
 import {
   executeInDevTool,
+  loadInDevProviderStatus,
   loadInDevToolCatalog,
   previewInDevTool,
   type DynamicToolSpec,
   type ToolInvocation,
   type ToolPreview,
+  type InDevProviderStatus,
 } from "@/lib/indev-tools-client";
 import "./uploads.css";
 
@@ -236,6 +238,7 @@ export default function Home() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [toolApprovals, setToolApprovals] = useState<ToolApproval[]>([]);
   const [account, setAccount] = useState("Conta local");
+  const [provider, setProvider] = useState<InDevProviderStatus>({ id: "openai", label: "OpenAI", defaultModel: DEFAULT_CHAT_MODEL, models: [DEFAULT_CHAT_MODEL], healthy: false });
   const [manualOpen, setManualOpen] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
   const [artifactBusy, setArtifactBusy] = useState("");
@@ -987,25 +990,29 @@ export default function Home() {
         await client.connect();
         if (disposed) return;
         setEngine("codex");
-        const [accountResult, modelResult, skillResult, toolResult] = await Promise.all([
-          client.request<{ account: { type: string; planType?: string; email?: string } | null }>("account/read", {}),
+        const [accountResult, modelResult, skillResult, toolResult, providerResult] = await Promise.all([
+          client.request<{ account: { type: string; planType?: string; email?: string } | null }>("account/read", {}).catch(() => ({ account: null })),
           client.request<{ data: Model[] }>("model/list", { limit: 20 }),
           client.request<{ data: Array<{ skills: Skill[] }> }>("skills/list", {}),
           loadInDevToolCatalog().catch(() => ({ tools: [] })),
+          loadInDevProviderStatus().catch(() => ({ id: "openai" as const, label: "OpenAI", defaultModel: DEFAULT_CHAT_MODEL, models: [DEFAULT_CHAT_MODEL], healthy: false })),
         ]);
         if (disposed) return;
-        const availableModels = modelResult.data || [];
-        const preferredModel = availableModels.find((entry) => entry.model === DEFAULT_CHAT_MODEL)?.model
+        const availableModels = providerResult.id === "iara"
+          ? providerResult.models.map((entry) => ({ id: `iara:${entry}`, model: entry, displayName: `${entry} · Iara`, isDefault: entry === providerResult.defaultModel }))
+          : modelResult.data || [];
+        const preferredModel = availableModels.find((entry) => entry.model === providerResult.defaultModel)?.model
           || availableModels.find((entry) => entry.isDefault)?.model
           || availableModels[0]?.model
-          || DEFAULT_CHAT_MODEL;
+          || providerResult.defaultModel;
+        setProvider(providerResult);
         setModels(availableModels);
         setModel(preferredModel);
         const availableTools = toolResult.tools.map((entry) => entry.spec);
         setDynamicTools(availableTools);
         setSkills((skillResult.data || []).flatMap((entry) => entry.skills || []).filter((skill) => skill.enabled));
         const currentAccount = accountResult.account;
-        setAccount(currentAccount?.type === "chatgpt" ? `ChatGPT ${currentAccount.planType || ""}`.trim() : currentAccount?.type || "Conta local");
+        setAccount(providerResult.id === "iara" ? `Iara · ${providerResult.environment || "ambiente configurado"}` : currentAccount?.type === "chatgpt" ? `ChatGPT ${currentAccount.planType || ""}`.trim() : currentAccount?.type || "Conta local");
         await createCodexThread(client, preferredModel, availableTools);
         await refreshThreads(client);
       } catch {
@@ -1049,8 +1056,8 @@ export default function Home() {
 
     <section className="conversation">
       <header>
-        <div><h1>{title}</h1><p><i className={engine}></i> {status} · {engine === "codex" ? "Codex App Server" : engine === "responses" ? "OpenAI API (reserva)" : "ambiente local"}</p></div>
-        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option value={DEFAULT_CHAT_MODEL}>GPT-5.6 Luna</option>}</select><button className="header-help" aria-label="Abrir manual do InDev" title="Manual do InDev" onClick={() => setManualOpen(true)}>?</button><button aria-label="Abrir configurações" onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
+        <div><h1>{title}</h1><p><i className={engine}></i> {status} · {engine === "codex" ? `Codex App Server · ${provider.label}` : engine === "responses" ? `${provider.label} Responses (reserva)` : "ambiente local"}</p></div>
+        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option value={provider.defaultModel}>{provider.defaultModel}</option>}</select><button className="header-help" aria-label="Abrir manual do InDev" title="Manual do InDev" onClick={() => setManualOpen(true)}>?</button><button aria-label="Abrir configurações" onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
       </header>
 
       <div className="chat">
@@ -1134,7 +1141,7 @@ export default function Home() {
             {preview.kind === "text" && <pre>{preview.text}</pre>}
           </div>
         </section>}
-        {activeTab !== "preview" && <><h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? "Codex App Server" : engine === "responses" ? "Responses API" : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${sandbox}` : "Reserva segura"}</span></div></>}
+        {activeTab !== "preview" && <><h2>Motor</h2><div className="backend-card"><b>{engine === "codex" ? `Codex App Server · ${provider.label}` : engine === "responses" ? `${provider.label} Responses API` : "Conectando"}</b><span>{engine === "codex" ? `${model || "modelo padrão"} · ${provider.backend || provider.id} · ${sandbox}` : "Reserva segura"}</span></div></>}
       </div>
     </aside>
 

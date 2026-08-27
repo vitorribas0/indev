@@ -7,8 +7,8 @@ Arquivos Excel `.xlsx` são convertidos localmente em contexto textual estrutura
 ## Requisitos
 
 - Node.js 22.13 ou superior.
-- Internet na primeira instalação e para usar os modelos da OpenAI.
-- Login da OpenAI ou uma chave em `.env.local`.
+- Internet na primeira instalação e para acessar o provedor de LLM escolhido.
+- Credenciais Iara ou login/chave da OpenAI em `.env.local`.
 
 O Codex CLI não precisa estar instalado globalmente: `@openai/codex` faz parte das dependências do projeto.
 
@@ -22,6 +22,17 @@ npm run dev
 
 O InDev estará em `http://localhost:3001`. Nada é publicado.
 
+## Usar a Iara
+
+Copie `.env.example` para `.env.local`, mantenha `INDEV_LLM_PROVIDER=iara`, preencha as duas credenciais e execute:
+
+```bash
+npm run setup:iara
+npm run dev
+```
+
+O Codex continua responsável por tools, skills, sandbox, memória e arquivos. Um adaptador protegido em `127.0.0.1` converte o protocolo Responses para o SDK oficial da Iara. A configuração detalhada está em [iara/README.md](iara/README.md).
+
 ## Verificar
 
 ```bash
@@ -31,11 +42,11 @@ npm test
 npm run test:e2e
 ```
 
-O teste de ponta a ponta usa o Codex do `node_modules`, abre portas isoladas, grava e lê um arquivo pelo App Server e confirma uma resposta real da LLM em streaming.
+O teste de ponta a ponta usa o Codex do `node_modules`, abre portas isoladas, grava e lê um arquivo pelo App Server e confirma uma resposta da LLM em streaming. O adaptador Iara também tem teste isolado sem credenciais reais.
 
 ## Tools locais
 
-O InDev descobre automaticamente módulos em `tools/builtin/` e envia seus schemas para todo chat novo. A primeira integração é `analise_massiva_llm`: ela lê um `.xlsx`, mostra uma prévia com quantidade de chamadas e os dados enviados, exige autorização de custo e cria outro Excel na pasta de entregas daquele chat. Essa tool usa `OPENAI_API_KEY` diretamente e adota `OPENAI_MASSIVA_MODEL=gpt-5.6-luna` como padrão.
+O InDev descobre automaticamente módulos em `tools/builtin/` e envia seus schemas para todo chat novo. A primeira integração é `analise_massiva_llm`: ela lê um `.xlsx`, mostra uma prévia com quantidade de chamadas e os dados enviados, exige autorização de custo e cria outro Excel na pasta de entregas daquele chat. A tool acompanha o provedor selecionado e usa `IARA_MASSIVA_MODEL` ou `OPENAI_MASSIVA_MODEL`.
 
 Para criar uma integração nova, siga [Como adicionar uma nova tool](tools/CRIAR_NOVA_TOOL.md). O registro já cuida de descoberta, validação do schema e aprovação de uso único; cada módulo precisa implementar somente o comportamento específico.
 

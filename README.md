@@ -76,7 +76,8 @@ Já estão conectados:
 - Comandos `/new`, `/interrupt`, `/compact`, `/skills` e `/status`.
 - Responses API como modo de reserva caso o App Server não esteja disponível.
 - Registro extensível de tools locais, com validação automática de parâmetros e aprovação de uso único para operações com custo ou risco.
-- Tool `analise_massiva_llm` para classificar linhas de Excel com GPT-5.6 Luna e salvar o resultado separado por chat.
+- Tool `analise_massiva_llm` para classificar linhas de Excel com o provedor configurado e salvar o resultado separado por chat.
+- Provedor Iara via SDK oficial, preservando o harness completo do Codex e permitindo escolher ambiente, backend e modelos no `.env.local`.
 - Renderer genérico de documentos em Markdown com perfis visuais versionados; o primeiro perfil implementa documentação Itaú em HTML standalone.
 
 ### Começar no Windows
@@ -96,6 +97,8 @@ Também é possível usar o PowerShell:
 ```
 
 O inicializador instala as dependências do próprio projeto, conduz o login da OpenAI e abre todos os componentes locais. Ele não publica o site.
+
+Na branch `indev-iara`, copie `app/.env.example` para `app/.env.local`, preencha as credenciais Iara e execute `npm run setup:iara` antes de iniciar. Python 3.9 ou superior também é necessário para o SDK da Iara.
 
 ### Começar no macOS ou Linux
 
@@ -121,7 +124,7 @@ Abra `http://localhost:3001`. O comando inicia automaticamente o site, o Codex A
 - Configuração de exemplo em `app/.env.example`.
 - Diagnóstico local com `npm run doctor`.
 
-O `node_modules` não é enviado ao Git: ele é reproduzido pelo `npm install` usando o lockfile. Modelos de IA continuam sendo serviços da OpenAI e exigem internet e uma conta ou chave válida.
+O `node_modules` não é enviado ao Git: ele é reproduzido pelo `npm install` usando o lockfile. Modelos de IA continuam sendo serviços externos. O InDev aceita Iara ou OpenAI e exige internet e credenciais válidas para o provedor escolhido.
 
 Login, chave, histórico e uploads ficam em `.indev/` dentro do clone, mas essa pasta é ignorada pelo Git para não vazar dados privados. Como alternativa ao login pelo navegador, copie `app/.env.example` para `app/.env.local` e preencha `OPENAI_API_KEY`; nunca versione esse arquivo.
 

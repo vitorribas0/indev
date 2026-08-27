@@ -21,8 +21,10 @@ test("o visual usa o Codex App Server e mantém a Responses API como reserva", a
   assert.match(page, /startResponsesFallback/);
   assert.match(page, /DEFAULT_CHAT_MODEL = "gpt-5\.6-luna"/);
   assert.match(page, /createCodexThread\(client, preferredModel, availableTools\)/);
-  assert.match(fallbackRoute, /process\.env\.OPENAI_MODEL \|\| "gpt-5\.6-luna"/);
+  assert.match(fallbackRoute, /serverLlmProvider/);
   assert.match(envExample, /OPENAI_MODEL=gpt-5\.6-luna/);
+  assert.match(envExample, /INDEV_LLM_PROVIDER=iara/);
+  assert.match(envExample, /IARA_MODEL=gpt-4\.1-mini/);
 });
 
 test("arquivos, skills, sandbox, terminal e comandos estão ligados ao protocolo", async () => {
@@ -107,8 +109,8 @@ test("o comando padrão inicia a interface local e o App Server incluído no pro
 
   assert.match(packageJson, /"dev": "node scripts\/indev-dev\.mjs"/);
   assert.match(packageJson, /"@openai\/codex": "0\.150\.0"/);
-  assert.match(launcher, /codexEntrypoint/);
-  assert.match(launcher, /app-server/);
+  assert.match(launcher, /codexAppServerArgs/);
+  assert.match(runtime, /app-server/);
   assert.match(launcher, /codex-bridge/);
   assert.match(launcher, /vinextEntrypoint/);
   assert.match(runtime, /node_modules.*@openai.*codex/s);

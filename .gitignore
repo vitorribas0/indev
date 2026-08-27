@@ -1,5 +1,7 @@
 .indev/
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Artefatos gerados durante conversas e testes locais
 entregaveis/
