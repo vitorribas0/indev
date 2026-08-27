@@ -48,6 +48,7 @@ type ArtifactFile = {
   mime: string;
   kind: ArtifactKind;
   role: ArtifactRole;
+  threadInput?: boolean;
   size?: number;
   modifiedAtMs?: number;
   sourceMessageId?: string;
@@ -242,6 +243,7 @@ export default function Home() {
         ...artifact,
         kind: importantKind,
         role: importantRole,
+        threadInput: artifact.threadInput || entry.threadInput,
         sourceMessageId: artifact.sourceMessageId || entry.sourceMessageId,
         size: artifact.size || entry.size,
       } : entry);
@@ -264,7 +266,7 @@ export default function Home() {
     });
   }
 
-  async function registerArtifactPath(rawPath: string, kind: ArtifactKind, sourceMessageId?: string, trackTurn = true, role: ArtifactRole = "worker") {
+  async function registerArtifactPath(rawPath: string, kind: ArtifactKind, sourceMessageId?: string, trackTurn = true, role: ArtifactRole = "worker", displayName?: string, threadInput = false) {
     const client = clientRef.current;
     const workspace = activeCwdRef.current;
     if (!client?.connected || !workspace || !rawPath) return null;
@@ -275,11 +277,12 @@ export default function Home() {
       if (!metadata.isFile || metadata.isDirectory) return null;
       const artifact = {
         id: artifactPathKey(path),
-        name: artifactFileName(path),
+        name: displayName || artifactFileName(path),
         path,
         mime: artifactMimeType(path),
         kind: kind === "worked" && isOutputArtifact(path) ? "generated" : kind,
         role,
+        threadInput,
         modifiedAtMs: metadata.modifiedAtMs,
         sourceMessageId,
       } satisfies ArtifactFile;
@@ -328,8 +331,8 @@ export default function Home() {
     const queue: Array<{ path: string; depth: number }> = [{ path: workspace, depth: 0 }];
     const discovered: ArtifactFile[] = [];
     let visited = 0;
-    const skippedDirectories = new Set([".git", "node_modules", ".next", "dist", ".wrangler", "codex-home"]);
-    const outputDirectories = new Set([".indev", "output", "outputs", "results", "resultados", "report", "reports", "relatorio", "relatorios"]);
+    const skippedDirectories = new Set([".git", ".indev", "node_modules", ".next", "dist", ".wrangler", "codex-home"]);
+    const outputDirectories = new Set(["output", "outputs", "results", "resultados", "report", "reports", "relatorio", "relatorios"]);
     while (queue.length && visited < 260) {
       const directory = queue.shift();
       if (!directory) break;
@@ -351,8 +354,8 @@ export default function Home() {
         try {
           const metadata = await client.request<{ isFile: boolean; isDirectory: boolean; modifiedAtMs: number }>("fs/getMetadata", { path });
           if (!metadata.isFile || metadata.modifiedAtMs < sinceMs) continue;
-          const scanKind: ArtifactKind = /[\\/]\.indev[\\/]uploads[\\/]/.test(path) ? "uploaded" : isOutputArtifact(path) ? "generated" : "worked";
-          const artifact = await registerArtifactPath(path, scanKind, currentAssistantMessageIdRef.current, true, scanKind === "uploaded" ? "input" : "worker");
+          const scanKind: ArtifactKind = isOutputArtifact(path) ? "generated" : "worked";
+          const artifact = await registerArtifactPath(path, scanKind, currentAssistantMessageIdRef.current);
           if (artifact) discovered.push(artifact);
         } catch { /* arquivo pode ter sido movido durante a varredura */ }
       }
@@ -441,7 +444,9 @@ export default function Home() {
         if (item.type === "agentMessage" && item.text && item.phase === "final_answer") await discoverArtifactsFromText(String(item.text), String(item.id), false);
         if (item.type === "userMessage") {
           for (const part of (item.content as Array<{ type?: string; path?: string; name?: string }> | undefined) || []) {
-            if (part.path) await registerArtifactPath(part.path, part.path.includes(".indev") ? "uploaded" : "referenced", undefined, false);
+            if (!part.path || part.path.endsWith(".indev-context.txt")) continue;
+            const inputPath = resolveAgentPath(activeCwdRef.current, part.path);
+            await registerArtifactPath(inputPath, inputPath.includes(".indev") ? "uploaded" : "referenced", undefined, false, "input", part.name, true);
           }
         }
       }
@@ -684,7 +689,8 @@ export default function Home() {
       }
       if (engine === "codex" && clientRef.current?.connected && cwd) {
         const safeName = selected.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-        const uploadDir = joinAgentPath(cwd, ".indev", "uploads");
+        const safeThreadId = threadId.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const uploadDir = joinAgentPath(cwd, ".indev", "uploads", safeThreadId);
         const path = joinAgentPath(uploadDir, `${crypto.randomUUID()}-${safeName}`);
         await clientRef.current.request("fs/createDirectory", { path: uploadDir, recursive: true });
         await clientRef.current.request("fs/writeFile", { path, dataBase64: await fileAsBase64(selected) }, 60_000);
@@ -705,7 +711,7 @@ export default function Home() {
           spreadsheetSummary: spreadsheet?.summary,
         };
         setFiles((current) => [...current, uploadedArtifact]);
-        rememberArtifact({ id: artifactPathKey(path), name: selected.name, path, mime: selected.type || artifactMimeType(path), kind: "uploaded", role: "input", size: selected.size }, false);
+        rememberArtifact({ id: artifactPathKey(path), name: selected.name, path, mime: selected.type || artifactMimeType(path), kind: "uploaded", role: "input", threadInput: true, size: selected.size }, false);
       } else {
         const form = new FormData(); form.append("file", selected);
         const response = await fetch(`/api/threads/${threadId}/files`, { method: "POST", body: form });
@@ -734,7 +740,9 @@ export default function Home() {
   function addContextFile(entry: FileEntry) {
     const path = joinAgentPath(cwd, entry.fileName);
     setContextFiles((current) => current.some((file) => file.path === path) ? current : [...current, { id: crypto.randomUUID(), name: entry.fileName, size: 0, type: entry.isDirectory ? "inode/directory" : "text/plain", path }]);
-    if (entry.isFile) rememberArtifact({ id: artifactPathKey(path), name: entry.fileName, path, mime: artifactMimeType(path), kind: "referenced", role: "input" }, false);
+    if (entry.isFile) {
+      rememberArtifact({ id: artifactPathKey(path), name: entry.fileName, path, mime: artifactMimeType(path), kind: "referenced", role: "input", threadInput: true }, false);
+    }
     setMenu(null);
   }
 
@@ -804,7 +812,7 @@ export default function Home() {
 
   const allAttachments = useMemo(() => [...files, ...contextFiles], [files, contextFiles]);
   const outputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "output"), [artifacts]);
-  const inputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "input"), [artifacts]);
+  const inputArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "input" && artifact.threadInput), [artifacts]);
   const workerArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.role === "worker"), [artifacts]);
   const visibleArtifactCount = outputArtifacts.length + inputArtifacts.length;
   const title = messages.find((message) => message.role === "user")?.content.slice(0, 48) || "Nova tarefa InDev";
@@ -971,7 +979,7 @@ export default function Home() {
             <section className="manual-section" id="manual-files">
               <div className="manual-section-title"><span>04</span><div><h3>Arquivos, imagens e Excel</h3><p>O contexto anexado vale para a próxima mensagem e permanece armazenado na área local da tarefa.</p></div></div>
               <div className="manual-feature-list">
-                <article><span>＋</span><div><strong>Upload</strong><p>Arquivos de até 12 MB. O InDev guarda o original em <code>.indev/uploads</code> dentro da área de trabalho.</p></div></article>
+                <article><span>＋</span><div><strong>Upload por chat</strong><p>Arquivos de até 12 MB. Cada conversa tem sua própria pasta dentro de <code>.indev/uploads</code> e não enxerga anexos de outros chats.</p></div></article>
                 <article><span>▤</span><div><strong>Planilhas .xlsx</strong><p>O original é preservado e o InDev extrai planilhas, linhas e células para um texto legível pelo agente. Para <code>.xls</code> antigo, salve antes como <code>.xlsx</code>.</p></div></article>
                 <article><span>@</span><div><strong>Contexto do projeto</strong><p>Selecione arquivos que já estão no repositório. O caminho absoluto é enviado ao agente para leitura e processamento.</p></div></article>
                 <article><span>×</span><div><strong>Remover antes de enviar</strong><p>Clique no anexo laranja para tirá-lo da próxima mensagem. Isso não apaga o arquivo original do seu computador.</p></div></article>
