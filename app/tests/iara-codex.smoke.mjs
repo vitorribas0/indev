@@ -33,8 +33,9 @@ function start(command, args) {
   return child;
 }
 
-async function waitFor(url, label) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+async function waitFor(url, label, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
       if ((await fetch(url, { signal: AbortSignal.timeout(500) })).ok) return;
     } catch {
@@ -42,7 +43,7 @@ async function waitFor(url, label) {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
-  assert.fail(`${label} não iniciou.\n${diagnostics}`);
+  assert.fail(`${label} não iniciou em ${timeoutMs / 1_000}s.\n${diagnostics}`);
 }
 
 try {

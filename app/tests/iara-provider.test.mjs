@@ -17,17 +17,18 @@ async function unusedPort() {
   });
 }
 
-async function waitFor(url, diagnostics = () => "") {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+async function waitFor(url, diagnostics = () => "", timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(750) });
       if (response.ok) return response;
     } catch {
       // A porta ainda pode estar abrindo; a próxima tentativa confirma.
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
-  throw new Error(`Servidor não iniciou: ${url}${diagnostics() ? `\n${diagnostics()}` : ""}`);
+  throw new Error(`Servidor não iniciou em ${timeoutMs / 1_000}s: ${url}${diagnostics() ? `\n${diagnostics()}` : ""}`);
 }
 
 test("a configuração Iara gera um provider Responses local para o Codex", () => {
