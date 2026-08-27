@@ -218,7 +218,11 @@ try {
   assert.match(streamed, /Iara conectada ao InDev com sucesso/, diagnostics);
   console.log("OK: adaptador Iara + Codex App Server + Responses streaming");
 } finally {
-  socket?.close();
+  socket?.terminate();
   for (const child of children) child.kill("SIGTERM");
-  if (responsesServer) await new Promise((resolveClose) => responsesServer.close(resolveClose));
+  if (responsesServer) {
+    const closed = new Promise((resolveClose) => responsesServer.close(resolveClose));
+    responsesServer.closeAllConnections();
+    await closed;
+  }
 }
