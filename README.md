@@ -51,6 +51,7 @@ Abra `app/.env.local` e preencha:
 INDEV_LLM_PROVIDER=iara
 IARA_CLIENT_ID=SEU_CLIENT_ID
 IARA_CLIENT_SECRET=SEU_CLIENT_SECRET
+IARA_ACCESS_TOKEN=SEU_TOKEN_DO_PORTAL_SE_FOR_EXIGIDO
 IARA_ENVIRONMENT=homol
 IARA_PROVIDER=azure_openai
 IARA_MODEL=gpt-4.1-mini
@@ -61,6 +62,8 @@ IARA_MASSIVA_MODEL=gpt-4.1-mini
 Ambientes aceitos: `dev`, `homol` e `prod`. Backends documentados pela Iara: `azure_openai`, `bedrock`, `openai` e `vertex`. Use somente modelos liberados no ACL da sua credencial.
 
 Nunca envie o `.env.local` ao Git. Ele já está ignorado pelo projeto.
+
+`IARA_ACCESS_TOKEN` é opcional e não substitui `IARA_CLIENT_ID` ou `IARA_CLIENT_SECRET`. Preencha-o quando sua integração/ACL exigir a chave de acesso Fernet emitida pelo portal Iara, situação comum em recursos de agentes ou workflows. Para uso de LLM sem essa exigência, deixe a variável vazia.
 
 ### 4. Instalar Node, Python e SDK Iara
 

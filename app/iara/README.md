@@ -14,8 +14,9 @@ O adaptador escuta exclusivamente em `127.0.0.1`, exige um token local aleatóri
 1. Copie `.env.example` para `.env.local`.
 2. Use `INDEV_LLM_PROVIDER=iara`.
 3. Preencha `IARA_CLIENT_ID` e `IARA_CLIENT_SECRET`.
-4. Confirme o ambiente (`dev`, `homol` ou `prod`), o backend e um modelo liberado no seu ACL.
-5. Dentro de `app`, execute `npm ci`, `npm run setup:iara` e `npm run dev`.
+4. Se a ACL exigir a chave Fernet do portal, preencha também `IARA_ACCESS_TOKEN`; ela é opcional e não substitui as duas credenciais OAuth.
+5. Confirme o ambiente (`dev`, `homol` ou `prod`), o backend e um modelo liberado no seu ACL.
+6. Dentro de `app`, execute `npm ci`, `npm run setup:iara` e `npm run dev`.
 
 O setup usa [requirements.txt](requirements.txt), cria `.indev/iara-venv` fora da pasta versionada e instala o SDK pelos Artifactory corporativos.
 

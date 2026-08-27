@@ -45,6 +45,8 @@ test("o adaptador Iara é restrito a localhost, autenticado e compatível com Re
   const source = await readFile(iaraServerEntrypoint, "utf8");
   assert.match(source, /HOST = "127\.0\.0\.1"/);
   assert.match(source, /hmac\.compare_digest/);
+  assert.match(source, /IARA_ACCESS_TOKEN/);
+  assert.match(source, /client_options\["access_token"\]/);
   assert.match(source, /"\/v1\/responses"/);
   assert.match(source, /"text\/event-stream"/);
   assert.match(source, /client\.responses\.stream/);

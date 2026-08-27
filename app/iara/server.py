@@ -64,13 +64,17 @@ def get_client() -> Any:
         from iaragenai import IaraGenAI
     except ImportError as error:
         raise RuntimeError("O SDK da Iara não está instalado. Execute npm run setup:iara.") from error
-    _client = IaraGenAI(
-        client_id=client_id,
-        client_secret=client_secret,
-        environment=os.getenv("IARA_ENVIRONMENT", "homol"),
-        provider=os.getenv("IARA_PROVIDER", "azure_openai"),
-        correlation_id=f"indev_{uuid.uuid4()}",
-    )
+    client_options = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "environment": os.getenv("IARA_ENVIRONMENT", "homol"),
+        "provider": os.getenv("IARA_PROVIDER", "azure_openai"),
+        "correlation_id": f"indev_{uuid.uuid4()}",
+    }
+    access_token = os.getenv("IARA_ACCESS_TOKEN", "").strip()
+    if access_token:
+        client_options["access_token"] = access_token
+    _client = IaraGenAI(**client_options)
     return _client
 
 
