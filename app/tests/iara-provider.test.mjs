@@ -17,7 +17,7 @@ async function unusedPort() {
   });
 }
 
-async function waitFor(url) {
+async function waitFor(url, diagnostics = () => "") {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
       const response = await fetch(url);
@@ -27,7 +27,7 @@ async function waitFor(url) {
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  throw new Error(`Servidor não iniciou: ${url}`);
+  throw new Error(`Servidor não iniciou: ${url}${diagnostics() ? `\n${diagnostics()}` : ""}`);
 }
 
 test("a configuração Iara gera um provider Responses local para o Codex", () => {
@@ -69,7 +69,8 @@ test("tools diretas usam o mesmo provedor e modelo econômico", () => {
 test("o adaptador Iara protege localhost e entrega Responses com streaming", async (context) => {
   const port = await unusedPort();
   const token = "token-local-de-teste";
-  const child = spawn("python3", [iaraServerEntrypoint], {
+  const pythonCommand = process.platform === "win32" ? "python" : "python3";
+  const child = spawn(pythonCommand, [iaraServerEntrypoint], {
     env: {
       ...process.env,
       INDEV_IARA_PROXY_PORT: String(port),
@@ -81,9 +82,13 @@ test("o adaptador Iara protege localhost e entrega Responses com streaming", asy
   });
   let errors = "";
   child.stderr.on("data", (chunk) => { errors += String(chunk); });
+  child.on("error", (error) => { errors += `Não foi possível iniciar ${pythonCommand}: ${error.message}`; });
+  child.on("exit", (code) => {
+    if (code && !errors) errors = `${pythonCommand} terminou antes do adaptador iniciar (código ${code}).`;
+  });
   context.after(() => child.kill("SIGTERM"));
 
-  await waitFor(`http://127.0.0.1:${port}/healthz`);
+  await waitFor(`http://127.0.0.1:${port}/healthz`, () => errors);
   const unauthorized = await fetch(`http://127.0.0.1:${port}/v1/models`);
   assert.equal(unauthorized.status, 401);
 

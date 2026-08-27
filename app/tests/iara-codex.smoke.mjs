@@ -46,7 +46,7 @@ async function waitFor(url, label) {
 }
 
 try {
-  start("python3", [iaraServerEntrypoint]);
+  start(process.platform === "win32" ? "python" : "python3", [iaraServerEntrypoint]);
   await waitFor(runtime.iaraProxyReady, "adaptador Iara");
   start(process.execPath, codexAppServerArgs(runtime));
   await waitFor(runtime.appServerReady, "Codex App Server com Iara");

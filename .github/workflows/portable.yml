@@ -22,8 +22,14 @@ jobs:
           node-version: 22.13.0
           cache: npm
           cache-dependency-path: app/package-lock.json
+      - name: Preparar Python do adaptador Iara
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - run: npm ci
       - name: Confirmar o Codex incluído no projeto
         run: node node_modules/@openai/codex/bin/codex.js --version
       - run: npm run lint
       - run: npm test
+      - name: Confirmar Codex com adaptador Iara
+        run: npm run test:iara
