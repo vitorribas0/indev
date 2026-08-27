@@ -1,6 +1,6 @@
 "use client";
 
-type RequestId = number;
+export type RequestId = string | number;
 
 export type CodexEnvelope = {
   id?: RequestId;

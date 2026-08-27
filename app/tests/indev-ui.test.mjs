@@ -5,9 +5,11 @@ import test from "node:test";
 const root = new URL("../", import.meta.url);
 
 test("o visual usa o Codex App Server e mantém a Responses API como reserva", async () => {
-  const [page, client] = await Promise.all([
+  const [page, client, fallbackRoute, envExample] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("lib/codex-app-client.ts", root), "utf8"),
+    readFile(new URL("app/api/threads/[threadId]/messages/route.ts", root), "utf8"),
+    readFile(new URL(".env.example", root), "utf8"),
   ]);
 
   assert.match(client, /ws:\/\/127\.0\.0\.1:4502/);
@@ -17,10 +19,17 @@ test("o visual usa o Codex App Server e mantém a Responses API como reserva", a
   assert.match(page, /item\/agentMessage\/delta/);
   assert.match(page, /requestApproval/);
   assert.match(page, /startResponsesFallback/);
+  assert.match(page, /DEFAULT_CHAT_MODEL = "gpt-5\.6-luna"/);
+  assert.match(page, /createCodexThread\(client, preferredModel, availableTools\)/);
+  assert.match(fallbackRoute, /process\.env\.OPENAI_MODEL \|\| "gpt-5\.6-luna"/);
+  assert.match(envExample, /OPENAI_MODEL=gpt-5\.6-luna/);
 });
 
 test("arquivos, skills, sandbox, terminal e comandos estão ligados ao protocolo", async () => {
-  const page = await readFile(new URL("app/page.tsx", root), "utf8");
+  const [page, bridge] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("scripts/codex-bridge.mjs", root), "utf8"),
+  ]);
 
   for (const capability of [
     "fs/writeFile",
@@ -31,7 +40,15 @@ test("arquivos, skills, sandbox, terminal e comandos estão ligados ao protocolo
     "item/commandExecution/outputDelta",
     "workspace-write",
     "read-only",
+    "item/tool/call",
+    "dynamicTools",
   ]) assert.match(page, new RegExp(capability.replace("/", "\\/")));
+  assert.match(page, /Aguardando sua aprovação de custo/);
+  assert.match(page, /Autorizar e executar/);
+  assert.match(page, /approval\.preview\.approvalToken/);
+  assert.match(bridge, /tools\/catalog/);
+  assert.match(bridge, /executeTool/);
+  assert.match(bridge, /consumeToolApproval/);
 });
 
 test("Excel é extraído e enviado como contexto legível", async () => {

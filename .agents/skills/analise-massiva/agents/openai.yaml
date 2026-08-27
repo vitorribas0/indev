@@ -1,0 +1,6 @@
+interface:
+  display_name: "Análise massiva"
+  short_description: "Classifique linhas de Excel com aprovação de custo"
+  default_prompt: "Use $analise-massiva para classificar os registros desta planilha e gerar um novo Excel."
+policy:
+  allow_implicit_invocation: true

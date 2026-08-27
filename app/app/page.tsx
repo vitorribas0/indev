@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { CodexAppClient, CodexEnvelope } from "@/lib/codex-app-client";
+import { CodexAppClient, CodexEnvelope, type RequestId } from "@/lib/codex-app-client";
 import {
   artifactFileName,
   artifactMimeType,
@@ -18,6 +18,14 @@ import {
   mergeArtifactRole,
 } from "@/lib/artifacts";
 import { extractSpreadsheetContext, isExcelWorkbook, isLegacyExcelWorkbook, type SpreadsheetContext } from "@/lib/spreadsheet-context";
+import {
+  executeInDevTool,
+  loadInDevToolCatalog,
+  previewInDevTool,
+  type DynamicToolSpec,
+  type ToolInvocation,
+  type ToolPreview,
+} from "@/lib/indev-tools-client";
 import "./uploads.css";
 
 type MessagePhase = "commentary" | "final_answer" | null;
@@ -40,7 +48,8 @@ type LiveStep = PlanStep & { id: string; detail?: string };
 type Skill = { name: string; description: string; path: string; enabled: boolean };
 type Model = { id: string; model: string; displayName: string; isDefault?: boolean };
 type ThreadSummary = { id: string; preview: string; name?: string | null; updatedAt?: number };
-type Approval = { id: number; method: string; params: Record<string, unknown> };
+type Approval = { id: RequestId; method: string; params: Record<string, unknown> };
+type ToolApproval = { id: RequestId; invocation: ToolInvocation; preview: ToolPreview; running?: boolean };
 type FileEntry = { fileName: string; isDirectory: boolean; isFile: boolean };
 type ArtifactFile = {
   id: string;
@@ -71,6 +80,7 @@ const slashCommands = [
   ["/status", "Ver conexão"],
 ];
 
+const DEFAULT_CHAT_MODEL = "gpt-5.6-luna";
 const ATTACHED_FILE_LINE = /^-\s+([^:\n]+):\s+((?:[A-Za-z]:[\\/]|\/)[^\n]+)$/gm;
 const STORED_UPLOAD_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i;
 
@@ -219,10 +229,12 @@ export default function Home() {
   const [workspaceFiles, setWorkspaceFiles] = useState<FileEntry[]>([]);
   const [contextFiles, setContextFiles] = useState<WorkspaceFile[]>([]);
   const [models, setModels] = useState<Model[]>([]);
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(DEFAULT_CHAT_MODEL);
+  const [dynamicTools, setDynamicTools] = useState<DynamicToolSpec[]>([]);
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("workspace-write");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [toolApprovals, setToolApprovals] = useState<ToolApproval[]>([]);
   const [account, setAccount] = useState("Conta local");
   const [manualOpen, setManualOpen] = useState(false);
   const [artifacts, setArtifacts] = useState<ArtifactFile[]>([]);
@@ -540,6 +552,64 @@ export default function Home() {
     }
   }
 
+  function respondToDynamicTool(id: RequestId, result: Record<string, unknown>, success: boolean) {
+    clientRef.current?.respond(id, {
+      contentItems: [{ type: "inputText", text: JSON.stringify(result) }],
+      success,
+    });
+  }
+
+  async function runDynamicTool(id: RequestId, invocation: ToolInvocation, approvalToken?: string) {
+    setToolApprovals((current) => current.map((entry) => entry.id === id ? { ...entry, running: true } : entry));
+    setStatus(`Executando ${invocation.tool}`);
+    try {
+      const result = await executeInDevTool(invocation, approvalToken);
+      if (result.outputPath) {
+        await registerArtifactPath(result.outputPath, "generated", currentAssistantMessageIdRef.current || undefined, true, "output");
+        setActiveTab("files");
+      }
+      respondToDynamicTool(id, result, result.ok !== false);
+      setStatus("Tool concluída");
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : "A tool local falhou.";
+      respondToDynamicTool(id, { ok: false, error: detail }, false);
+      setError(detail);
+      setStatus("Tool encerrada com erro");
+    } finally {
+      setToolApprovals((current) => current.filter((entry) => entry.id !== id));
+    }
+  }
+
+  async function prepareDynamicTool(id: RequestId, params: Record<string, unknown>) {
+    const invocation: ToolInvocation = {
+      tool: String(params.tool || ""),
+      arguments: params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {},
+      threadId: String(params.threadId || activeThreadRef.current),
+      cwd: activeCwdRef.current,
+    };
+    setStatus(`Validando ${invocation.tool}`);
+    try {
+      const preview = await previewInDevTool(invocation);
+      if (preview.approvalRequired) {
+        setToolApprovals((current) => [...current.filter((entry) => entry.id !== id), { id, invocation, preview }]);
+        setStatus("Aguardando sua aprovação de custo");
+        return;
+      }
+      await runDynamicTool(id, invocation, preview.approvalToken);
+    } catch (caught) {
+      const detail = caught instanceof Error ? caught.message : "Não foi possível preparar a tool.";
+      respondToDynamicTool(id, { ok: false, error: detail }, false);
+      setError(detail);
+      setStatus("Tool não executada");
+    }
+  }
+
+  function declineDynamicTool(approval: ToolApproval) {
+    respondToDynamicTool(approval.id, { ok: false, cancelled: true, message: "O usuário não autorizou o custo da análise massiva." }, false);
+    setToolApprovals((current) => current.filter((entry) => entry.id !== approval.id));
+    setStatus("Análise massiva cancelada");
+  }
+
   function handleCodexMessage(message: CodexEnvelope) {
     const method = message.method || "";
     const params = message.params || {};
@@ -547,8 +617,12 @@ export default function Home() {
     if (eventThreadId && activeThreadRef.current && eventThreadId !== activeThreadRef.current) return;
 
     if (message.id !== undefined && method.includes("requestApproval")) {
-      setApprovals((current) => [...current, { id: message.id as number, method, params }]);
+      setApprovals((current) => [...current, { id: message.id, method, params }]);
       setStatus("Aguardando sua aprovação");
+      return;
+    }
+    if (message.id !== undefined && method === "item/tool/call") {
+      void prepareDynamicTool(message.id, params);
       return;
     }
     if (method === "indev/disconnected") {
@@ -661,14 +735,15 @@ export default function Home() {
     }
   }
 
-  async function createCodexThread(client = clientRef.current) {
+  async function createCodexThread(client = clientRef.current, requestedModel = model || DEFAULT_CHAT_MODEL, requestedTools = dynamicTools) {
     if (!client?.connected) return;
-    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setTerminal(""); setDiff(""); setPlan([]); setLiveSteps([]); setSelectedStepId(""); resetArtifacts(); setActiveTab("activity");
+    setStatus("Criando tarefa"); setError(""); setMessages([]); setEvents([]); setFiles([]); setContextFiles([]); setSelectedSkills([]); setToolApprovals([]); setTerminal(""); setDiff(""); setPlan([]); setLiveSteps([]); setSelectedStepId(""); resetArtifacts(); setActiveTab("activity");
     const response = await client.request<ThreadStartResponse>("thread/start", {
-      model: model || undefined,
+      model: requestedModel,
       approvalPolicy: "on-request",
       sandbox,
       threadSource: "indev",
+      dynamicTools: requestedTools,
       developerInstructions: "Você é o InDev, um agente de desenvolvimento local. Responda em português quando o usuário falar português. Use tools com segurança, mantenha o usuário informado e nunca alegue uma execução que não ocorreu. Salve todo relatório, pacote ZIP e outro entregável dentro da área de trabalho da tarefa. Na resposta final, mencione o caminho absoluto somente dos entregáveis solicitados pelo usuário; a interface transforma esses caminhos em prévia e download. Não mencione scripts, cópias, arquivos temporários ou auxiliares, salvo quando o usuário pedir o processo completo.",
     });
     activeThreadRef.current = response.thread.id;
@@ -912,18 +987,26 @@ export default function Home() {
         await client.connect();
         if (disposed) return;
         setEngine("codex");
-        const [accountResult, modelResult, skillResult] = await Promise.all([
+        const [accountResult, modelResult, skillResult, toolResult] = await Promise.all([
           client.request<{ account: { type: string; planType?: string; email?: string } | null }>("account/read", {}),
           client.request<{ data: Model[] }>("model/list", { limit: 20 }),
           client.request<{ data: Array<{ skills: Skill[] }> }>("skills/list", {}),
+          loadInDevToolCatalog().catch(() => ({ tools: [] })),
         ]);
         if (disposed) return;
-        setModels(modelResult.data || []);
-        setModel(modelResult.data?.find((entry) => entry.isDefault)?.model || modelResult.data?.[0]?.model || "");
+        const availableModels = modelResult.data || [];
+        const preferredModel = availableModels.find((entry) => entry.model === DEFAULT_CHAT_MODEL)?.model
+          || availableModels.find((entry) => entry.isDefault)?.model
+          || availableModels[0]?.model
+          || DEFAULT_CHAT_MODEL;
+        setModels(availableModels);
+        setModel(preferredModel);
+        const availableTools = toolResult.tools.map((entry) => entry.spec);
+        setDynamicTools(availableTools);
         setSkills((skillResult.data || []).flatMap((entry) => entry.skills || []).filter((skill) => skill.enabled));
         const currentAccount = accountResult.account;
         setAccount(currentAccount?.type === "chatgpt" ? `ChatGPT ${currentAccount.planType || ""}`.trim() : currentAccount?.type || "Conta local");
-        await createCodexThread(client);
+        await createCodexThread(client, preferredModel, availableTools);
         await refreshThreads(client);
       } catch {
         if (disposed) return;
@@ -967,7 +1050,7 @@ export default function Home() {
     <section className="conversation">
       <header>
         <div><h1>{title}</h1><p><i className={engine}></i> {status} · {engine === "codex" ? "Codex App Server" : engine === "responses" ? "OpenAI API (reserva)" : "ambiente local"}</p></div>
-        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option>gpt-5.4</option>}</select><button className="header-help" aria-label="Abrir manual do InDev" title="Manual do InDev" onClick={() => setManualOpen(true)}>?</button><button aria-label="Abrir configurações" onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
+        <div className="header-actions"><select aria-label="Modelo" value={model} onChange={(event) => setModel(event.target.value)} disabled={engine !== "codex"}>{models.length ? models.map((entry) => <option key={entry.id} value={entry.model}>{entry.displayName}</option>) : <option value={DEFAULT_CHAT_MODEL}>GPT-5.6 Luna</option>}</select><button className="header-help" aria-label="Abrir manual do InDev" title="Manual do InDev" onClick={() => setManualOpen(true)}>?</button><button aria-label="Abrir configurações" onClick={() => setMenu(menu === "settings" ? null : "settings")}>•••</button></div>
       </header>
 
       <div className="chat">
@@ -978,6 +1061,7 @@ export default function Home() {
         })}
         {busy && !messages.some((message) => message.streaming) && <div className="thinking"><span></span><span></span><span></span> Codex está trabalhando…</div>}
         {approvals.map((approval) => <div className="approval-card" key={approval.id}><strong>Confirmação necessária</strong><p>{String(approval.params.reason || approval.params.command || (approval.method.includes("fileChange") ? "Alterar arquivos fora da área permitida" : "Executar uma ação protegida"))}</p><div><button onClick={() => answerApproval(approval, "decline")}>Recusar</button><button className="approve" onClick={() => answerApproval(approval, "accept")}>Aprovar uma vez</button></div></div>)}
+        {toolApprovals.map((approval) => <div className="approval-card tool-approval" key={approval.id}><strong>{approval.preview.title}</strong><p>{approval.preview.summary}</p><ul>{approval.preview.details.map((detail) => <li key={detail}>{detail}</li>)}</ul><small>A execução só começa depois da sua aprovação.</small><div><button disabled={approval.running} onClick={() => declineDynamicTool(approval)}>Cancelar</button><button className="approve" disabled={approval.running} onClick={() => void runDynamicTool(approval.id, approval.invocation, approval.preview.approvalToken)}>{approval.running ? "Executando…" : "Autorizar e executar"}</button></div></div>)}
         {error && <div className="error">{error}</div>}
         <div ref={chatEndRef}></div>
       </div>
@@ -1141,7 +1225,7 @@ export default function Home() {
                 <article><b>Validação</b><span></span><p>Testes e saídas aparecem no painel.</p></article>
                 <article><b>Resposta</b><p>Você recebe o resultado e as alterações.</p></article>
               </div>
-              <aside className="manual-note"><strong>Cadastro de novas tools</strong><p>A interface atual ainda não possui um formulário para registrar tools. Isso exige integrar uma ferramenta ao App Server, normalmente por MCP, plugin ou código do backend. Uma skill pode ensinar quando usar a tool, mas não substitui essa conexão.</p></aside>
+              <aside className="manual-note"><strong>Cadastro de novas tools</strong><p>Crie um módulo em <code>app/tools/builtin/</code>. O registro local descobre o arquivo, valida o schema e disponibiliza a tool em chats novos. Tools com custo ou risco podem fornecer um preview e exigir aprovação visual antes da execução.</p></aside>
             </section>
 
             <section className="manual-section" id="manual-security">
@@ -1163,7 +1247,7 @@ export default function Home() {
                 <article><strong>Excel não foi lido</strong><p>Use <code>.xlsx</code>, confirme o resumo mostrado no anexo e diga claramente quais abas ou colunas devem ser analisadas.</p></article>
                 <article><strong>A tarefa está longa</strong><p>Use <code>/compact</code> para resumir o histórico e manter os pontos importantes no contexto.</p></article>
               </div>
-              <aside className="manual-available"><div><span>O QUE FUNCIONA HOJE</span><p>Chat em streaming, modelos, histórico, uploads e Excel, arquivos do projeto, prévia HTML/PDF/imagens/texto, downloads e ZIP, skills, comandos, sandbox, aprovações, plano, tools, terminal e diff.</p></div><div><span>AINDA NÃO TEM INTERFACE PRÓPRIA</span><p>Loja de plugins, cadastro visual de MCP/tools, execução em nuvem e todos os comandos existentes no Codex original.</p></div></aside>
+              <aside className="manual-available"><div><span>O QUE FUNCIONA HOJE</span><p>Chat em streaming, modelos, histórico, uploads e Excel, arquivos do projeto, prévia HTML/PDF/imagens/texto, downloads e ZIP, skills, comandos, sandbox, aprovações, plano, tools locais extensíveis, terminal e diff.</p></div><div><span>AINDA NÃO TEM INTERFACE PRÓPRIA</span><p>Loja de plugins, formulário visual para criar tools, execução em nuvem e todos os comandos existentes no Codex original.</p></div></aside>
             </section>
           </div>
         </div>

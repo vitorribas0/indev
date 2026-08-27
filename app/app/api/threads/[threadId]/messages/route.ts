@@ -20,7 +20,7 @@ export async function POST(request: Request, context: { params: Promise<{ thread
   const client = new OpenAI({ apiKey });
   try {
     const response = await client.responses.create({
-      model: process.env.OPENAI_MODEL || "gpt-5.4",
+      model: process.env.OPENAI_MODEL || "gpt-5.6-luna",
       store: false,
       instructions: "Você é o InDev, um assistente de desenvolvimento. Seja objetivo, explique o plano antes de mudanças relevantes e não alegue executar ferramentas que não estão conectadas.",
       input: [{

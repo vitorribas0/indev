@@ -33,6 +33,14 @@ npm run test:e2e
 
 O teste de ponta a ponta usa o Codex do `node_modules`, abre portas isoladas, grava e lê um arquivo pelo App Server e confirma uma resposta real da LLM em streaming.
 
+## Tools locais
+
+O InDev descobre automaticamente módulos em `tools/builtin/` e envia seus schemas para todo chat novo. A primeira integração é `analise_massiva_llm`: ela lê um `.xlsx`, mostra uma prévia com quantidade de chamadas e os dados enviados, exige autorização de custo e cria outro Excel na pasta de entregas daquele chat. Essa tool usa `OPENAI_API_KEY` diretamente e adota `OPENAI_MASSIVA_MODEL=gpt-5.6-luna` como padrão.
+
+Para criar uma integração nova, siga [Como adicionar uma nova tool](tools/CRIAR_NOVA_TOOL.md). O registro já cuida de descoberta, validação do schema e aprovação de uso único; cada módulo precisa implementar somente o comportamento específico.
+
+O renderizador `renderizar_documento` transforma Markdown em HTML seguro e standalone. A identidade visual fica separada em `document-profiles/`; o perfil inicial `itau` inclui layout institucional e logo no canto superior esquerdo. Para adicionar outra identidade sem duplicar a tool, siga [Como adicionar um perfil](document-profiles/CRIAR_NOVO_PERFIL.md).
+
 ## Dados privados
 
 O login, o histórico operacional e os uploads ficam em `../.indev/`, que é ignorada pelo Git. O arquivo `.env.local` também é ignorado. Use `.env.example` apenas como modelo.

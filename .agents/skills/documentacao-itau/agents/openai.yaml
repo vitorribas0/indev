@@ -1,0 +1,7 @@
+interface:
+  display_name: "Documentação Itaú"
+  short_description: "Gera documentos institucionais no padrão Itaú"
+  brand_color: "#EC7000"
+  default_prompt: "Use $documentacao-itau para criar este documento no padrão institucional Itaú."
+policy:
+  allow_implicit_invocation: true

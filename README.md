@@ -75,6 +75,9 @@ Já estão conectados:
 - Catálogo de skills e envio de skills para a tarefa.
 - Comandos `/new`, `/interrupt`, `/compact`, `/skills` e `/status`.
 - Responses API como modo de reserva caso o App Server não esteja disponível.
+- Registro extensível de tools locais, com validação automática de parâmetros e aprovação de uso único para operações com custo ou risco.
+- Tool `analise_massiva_llm` para classificar linhas de Excel com GPT-5.6 Luna e salvar o resultado separado por chat.
+- Renderer genérico de documentos em Markdown com perfis visuais versionados; o primeiro perfil implementa documentação Itaú em HTML standalone.
 
 ### Começar no Windows
 

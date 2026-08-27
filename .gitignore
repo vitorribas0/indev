@@ -1,2 +1,10 @@
 .indev/
 .DS_Store
+
+# Artefatos gerados durante conversas e testes locais
+entregaveis/
+/relatorio*.html
+/relatorio*.md
+/gerar_relatorio*.js
+/gerar_relatorio*.py
+/generate_report.py
