@@ -56,5 +56,6 @@ test("o adaptador Iara é restrito a localhost, autenticado e compatível com Re
   assert.match(requirements, /--trusted-host artifactory\.prod\.aws\.cloud\.ihf/);
   assert.match(requirements, /python-remotes\/simple/);
   assert.match(requirements, /itau-kk7-python-release\/simple/);
+  assert.match(requirements, /iara_genai_sdk==0\.43\.0/);
   assert.doesNotMatch(requirements, /snapshot/i);
 });
