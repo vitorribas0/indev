@@ -99,19 +99,150 @@ def mock_response(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def mock_events(response: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    output = response["output"][0]
-    part = output["content"][0]
+def response_events(value: Any) -> Iterator[dict[str, Any]]:
+    """Converte uma resposta final da Iara no contrato SSE estrito do Codex."""
+
+    response = jsonable(value)
+    if not isinstance(response, dict):
+        raise ValueError("A Iara retornou uma resposta em formato inválido.")
+    response.setdefault("id", f"resp_indev_{uuid.uuid4().hex}")
+    response.setdefault("object", "response")
+    response.setdefault("created_at", int(time.time()))
+    if not response.get("status"):
+        response["status"] = "completed"
+    output_items = response.get("output")
+    if not isinstance(output_items, list):
+        output_items = []
+        response["output"] = output_items
+
+    sequence = 0
+
+    def event(event_type: str, **fields: Any) -> dict[str, Any]:
+        nonlocal sequence
+        result = {"type": event_type, **fields, "sequence_number": sequence}
+        sequence += 1
+        return result
+
     base = {**response, "status": "in_progress", "output": []}
-    yield {"type": "response.created", "response": base, "sequence_number": 0}
-    yield {"type": "response.in_progress", "response": base, "sequence_number": 1}
-    yield {"type": "response.output_item.added", "output_index": 0, "item": {**output, "status": "in_progress", "content": []}, "sequence_number": 2}
-    yield {"type": "response.content_part.added", "item_id": output["id"], "output_index": 0, "content_index": 0, "part": {**part, "text": ""}, "sequence_number": 3}
-    yield {"type": "response.output_text.delta", "item_id": output["id"], "output_index": 0, "content_index": 0, "delta": part["text"], "logprobs": [], "sequence_number": 4}
-    yield {"type": "response.output_text.done", "item_id": output["id"], "output_index": 0, "content_index": 0, "text": part["text"], "logprobs": [], "sequence_number": 5}
-    yield {"type": "response.content_part.done", "item_id": output["id"], "output_index": 0, "content_index": 0, "part": part, "sequence_number": 6}
-    yield {"type": "response.output_item.done", "output_index": 0, "item": output, "sequence_number": 7}
-    yield {"type": "response.completed", "response": response, "sequence_number": 8}
+    yield event("response.created", response=base)
+    yield event("response.in_progress", response=base)
+
+    for output_index, raw_item in enumerate(output_items):
+        item = raw_item if isinstance(raw_item, dict) else jsonable(raw_item)
+        if not isinstance(item, dict):
+            continue
+        item = dict(item)
+        item_type = str(item.get("type", ""))
+        item_id = str(item.get("id") or item.get("call_id") or f"item_{uuid.uuid4().hex}")
+        item["id"] = item_id
+        item.setdefault("status", "completed")
+        output_items[output_index] = item
+        added_item = {**item, "status": "in_progress"}
+        if item_type == "message":
+            added_item["content"] = []
+        elif item_type == "function_call":
+            added_item["arguments"] = ""
+        yield event("response.output_item.added", output_index=output_index, item=added_item)
+
+        if item_type == "message":
+            content = item.get("content") if isinstance(item.get("content"), list) else []
+            for content_index, raw_part in enumerate(content):
+                part = raw_part if isinstance(raw_part, dict) else jsonable(raw_part)
+                if not isinstance(part, dict):
+                    continue
+                part = dict(part)
+                part_type = str(part.get("type", ""))
+                if part_type == "output_text":
+                    text = str(part.get("text", ""))
+                    part.setdefault("annotations", [])
+                    content[content_index] = part
+                    item["content"] = content
+                    yield event(
+                        "response.content_part.added",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part={**part, "text": ""},
+                    )
+                    if text:
+                        yield event(
+                            "response.output_text.delta",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            delta=text,
+                            logprobs=[],
+                        )
+                    yield event(
+                        "response.output_text.done",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        text=text,
+                        logprobs=[],
+                    )
+                    yield event(
+                        "response.content_part.done",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part=part,
+                    )
+                elif part_type == "refusal":
+                    refusal = str(part.get("refusal", ""))
+                    yield event(
+                        "response.content_part.added",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part={**part, "refusal": ""},
+                    )
+                    if refusal:
+                        yield event(
+                            "response.refusal.delta",
+                            item_id=item_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                            delta=refusal,
+                        )
+                    yield event(
+                        "response.refusal.done",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        refusal=refusal,
+                    )
+                    yield event(
+                        "response.content_part.done",
+                        item_id=item_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                        part=part,
+                    )
+        elif item_type == "function_call":
+            arguments = str(item.get("arguments", ""))
+            if arguments:
+                yield event(
+                    "response.function_call_arguments.delta",
+                    item_id=item_id,
+                    output_index=output_index,
+                    delta=arguments,
+                )
+            yield event(
+                "response.function_call_arguments.done",
+                item_id=item_id,
+                output_index=output_index,
+                name=str(item.get("name", "")),
+                arguments=arguments,
+            )
+
+        yield event("response.output_item.done", output_index=output_index, item=item)
+
+    terminal_type = {
+        "completed": "response.completed",
+        "failed": "response.failed",
+    }.get(str(response.get("status")), "response.incomplete")
+    yield event(terminal_type, response=response)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -189,19 +320,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.read_payload()
             streaming = bool(payload.pop("stream", False))
-            if MOCK_MODE:
-                response = mock_response(payload)
-                if streaming:
-                    self.send_events(mock_events(response))
-                else:
-                    self.send_json(200, response)
-                return
-            client = get_client()
+            response = mock_response(payload) if MOCK_MODE else get_client().responses.create(**payload)
             if streaming:
-                with client.responses.stream(**payload) as stream:
-                    self.send_events(stream)
+                self.send_events(response_events(response))
             else:
-                self.send_json(200, client.responses.create(**payload))
+                self.send_json(200, response)
         except (ValueError, json.JSONDecodeError) as error:
             self.send_json(400, {"error": {"type": "invalid_request_error", "message": str(error)}})
         except Exception as error:  # SDK normaliza erros HTTP; não expomos credenciais nem stack trace.
@@ -292,6 +415,30 @@ def self_test() -> None:
     for expected in ("response.output_text.delta", "response.completed", "data: [DONE]"):
         if expected not in events:
             raise RuntimeError(f"O streaming não contém {expected!r}.")
+    if events.index("response.output_item.added") > events.index("response.output_text.delta"):
+        raise RuntimeError("O delta de texto foi enviado antes da abertura do item.")
+
+    function_response = {
+        "id": "resp_tool_test",
+        "status": "completed",
+        "output": [{
+            "id": "fc_test",
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_test",
+            "name": "ler_arquivo",
+            "arguments": "{\"path\":\"teste.txt\"}",
+        }],
+    }
+    function_event_types = [event["type"] for event in response_events(function_response)]
+    expected_function_events = [
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.done",
+    ]
+    if any(event_type not in function_event_types for event_type in expected_function_events):
+        raise RuntimeError("O streaming normalizado não preservou a chamada de tool.")
     print("OK: adaptador Iara autenticado e compatível com Responses streaming", flush=True)
 
 

@@ -52,7 +52,9 @@ test("o adaptador Iara é restrito a localhost, autenticado e compatível com Re
   assert.match(source, /client_options\["access_token"\]/);
   assert.match(source, /"\/v1\/responses"/);
   assert.match(source, /"text\/event-stream"/);
-  assert.match(source, /client\.responses\.stream/);
+  assert.match(source, /responses\.create/);
+  assert.match(source, /response\.output_item\.added/);
+  assert.match(source, /response\.function_call_arguments\.done/);
   assert.match(requirements, /--trusted-host artifactory\.prod\.aws\.cloud\.ihf/);
   assert.match(requirements, /python-remotes\/simple/);
   assert.match(requirements, /itau-kk7-python-release\/simple/);
