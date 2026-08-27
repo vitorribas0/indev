@@ -66,6 +66,8 @@ test("resultados locais viram prévia e download dentro do InDev", async () => {
   assert.match(page, /artifact\.role === "input" && artifact\.threadInput/);
   assert.match(page, /"\.git", "\.indev", "node_modules"/);
   assert.match(page, /"uploads", safeThreadId/);
+  assert.match(page, /"thread\/read"/);
+  assert.match(page, /if \(turnActiveRef\.current\)/);
   assert.match(page, /sandbox="allow-scripts allow-forms allow-modals allow-downloads"/);
   assert.match(artifacts, /messageWithoutLocalPaths/);
   assert.match(artifacts, /isPathInsideWorkspace/);

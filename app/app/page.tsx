@@ -9,7 +9,6 @@ import {
   artifactPreviewKind,
   extractArtifactCandidates,
   isAbsoluteAgentPath,
-  isDeliverableArtifact,
   isOutputArtifact,
   isPathInsideWorkspace,
   messageWithoutLocalPaths,
@@ -154,6 +153,7 @@ export default function Home() {
   const pendingTitleRef = useRef("");
   const workspaceWatchIdRef = useRef("");
   const turnStartedAtRef = useRef(0);
+  const turnActiveRef = useRef(false);
   const currentAssistantMessageIdRef = useRef("");
   const artifactPathsRef = useRef(new Set<string>());
   const artifactListRef = useRef<ArtifactFile[]>([]);
@@ -219,6 +219,7 @@ export default function Home() {
     artifactPathsRef.current.clear();
     artifactListRef.current = [];
     turnArtifactPathsRef.current.clear();
+    turnActiveRef.current = false;
     setArtifacts([]);
     setPreview(null);
     setArtifactBusy("");
@@ -324,7 +325,7 @@ export default function Home() {
     await client.request("fs/watch", { watchId, path: workspace }).catch(() => { workspaceWatchIdRef.current = ""; });
   }
 
-  async function scanWorkspaceArtifacts(sinceMs = 0, outputsOnly = false) {
+  async function scanWorkspaceArtifacts(sinceMs = 0) {
     const client = clientRef.current;
     const workspace = activeCwdRef.current;
     if (!client?.connected || !workspace) return [];
@@ -332,7 +333,6 @@ export default function Home() {
     const discovered: ArtifactFile[] = [];
     let visited = 0;
     const skippedDirectories = new Set([".git", ".indev", "node_modules", ".next", "dist", ".wrangler", "codex-home"]);
-    const outputDirectories = new Set(["output", "outputs", "results", "resultados", "report", "reports", "relatorio", "relatorios"]);
     while (queue.length && visited < 260) {
       const directory = queue.shift();
       if (!directory) break;
@@ -346,11 +346,10 @@ export default function Home() {
         visited += 1;
         const path = joinAgentPath(directory.path, entry.fileName);
         if (entry.isDirectory) {
-          const allowedOutputDirectory = !outputsOnly || directory.depth > 0 || outputDirectories.has(entry.fileName.toLowerCase());
-          if (directory.depth < 2 && allowedOutputDirectory && !skippedDirectories.has(entry.fileName) && !shouldIgnoreArtifactPath(`${path}/`)) queue.push({ path, depth: directory.depth + 1 });
+          if (directory.depth < 2 && !skippedDirectories.has(entry.fileName) && !shouldIgnoreArtifactPath(`${path}/`)) queue.push({ path, depth: directory.depth + 1 });
           continue;
         }
-        if (!entry.isFile || shouldIgnoreArtifactPath(path) || (outputsOnly && !isDeliverableArtifact(path))) continue;
+        if (!entry.isFile || shouldIgnoreArtifactPath(path)) continue;
         try {
           const metadata = await client.request<{ isFile: boolean; isDirectory: boolean; modifiedAtMs: number }>("fs/getMetadata", { path });
           if (!metadata.isFile || metadata.modifiedAtMs < sinceMs) continue;
@@ -375,11 +374,25 @@ export default function Home() {
   }
 
   async function refreshWorkspaceResults() {
+    const client = clientRef.current;
+    if (!client?.connected || !activeThreadRef.current) return;
+    resetArtifacts();
     setArtifactBusy("refresh");
-    const discovered = await scanWorkspaceArtifacts(0, true);
-    setArtifactBusy("");
-    if (discovered.length) setActiveTab("files");
-    else setError("Nenhum relatório, planilha, imagem, documento ou ZIP foi encontrado na área da tarefa.");
+    setError("");
+    try {
+      if (messages.length > 0) {
+        const response = await client.request<{ thread: { turns?: ThreadStartResponse["thread"]["turns"] } }>("thread/read", { threadId: activeThreadRef.current, includeTurns: true });
+        await hydrateArtifacts(response.thread.turns || []);
+      }
+      for (const file of [...files, ...contextFiles]) {
+        if (file.path) await registerArtifactPath(file.path, file.path.includes(".indev") ? "uploaded" : "referenced", undefined, false, "input", file.name, true);
+      }
+      setActiveTab("files");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Não foi possível sincronizar os arquivos deste chat.");
+    } finally {
+      setArtifactBusy("");
+    }
   }
 
   async function readArtifact(artifact: ArtifactFile) {
@@ -465,7 +478,7 @@ export default function Home() {
       return;
     }
     if (method === "indev/disconnected") {
-      setEngine("offline"); setStatus("App Server desconectado"); setBusy(false);
+      turnActiveRef.current = false; setEngine("offline"); setStatus("App Server desconectado"); setBusy(false);
       return;
     }
     if (method === "item/agentMessage/delta") {
@@ -518,7 +531,7 @@ export default function Home() {
       return;
     }
     if (method === "fs/changed") {
-      for (const path of (params.changedPaths as string[] | undefined) || []) scheduleArtifactPath(path);
+      if (turnActiveRef.current) for (const path of (params.changedPaths as string[] | undefined) || []) scheduleArtifactPath(path);
       return;
     }
     if (method === "item/commandExecution/outputDelta") {
@@ -528,11 +541,13 @@ export default function Home() {
     if (method === "turn/plan/updated") { setPlan((params.plan as PlanStep[]) || []); return; }
     if (method === "turn/diff/updated") { setDiff(String(params.diff || "")); return; }
     if (method === "turn/started") {
+      turnActiveRef.current = true;
       turnStartedAtRef.current = currentTimeMs();
       turnArtifactPathsRef.current.clear();
       return;
     }
     if (method === "turn/completed") {
+      turnActiveRef.current = false;
       const turn = (params.turn || {}) as { status?: string; error?: { message?: string } };
       setBusy(false);
       setStatus(turn.status === "completed" ? "Pronto" : "Execução encerrada");
@@ -546,6 +561,7 @@ export default function Home() {
       return;
     }
     if (method === "error" || method === "warning" || method === "guardianWarning") {
+      turnActiveRef.current = false;
       const detail = String(params.message || params.error || "O Codex informou um erro.");
       setError(detail); setBusy(false); setStatus("Aguardando");
     }
@@ -608,6 +624,7 @@ export default function Home() {
     if (!content || !threadId || busy) return;
     if (content.startsWith("/") && await runSlashCommand(content)) return;
     setInput(""); setError(""); setStatus("Codex está pensando"); setBusy(true); setMenu(null);
+    turnActiveRef.current = true;
     turnStartedAtRef.current = currentTimeMs();
     turnArtifactPathsRef.current.clear();
     currentAssistantMessageIdRef.current = "";
