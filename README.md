@@ -59,7 +59,45 @@ O primeiro preview visual está em [design/indev-preview.html](design/indev-prev
 
 ## Implementação atual
 
-A base do InDev está em `app/` e inclui uma API própria para tarefas, histórico de mensagens e eventos de execução. O executor de comandos ainda está intencionalmente bloqueado até que o sandbox e as aprovações sejam conectados.
+A aplicação local está em `app/` e já usa o **Codex App Server público** como motor principal. A interface laranja/glass recebe respostas em streaming e mostra o trabalho do agente em tempo real.
+
+Já estão conectados:
+
+- Conta e catálogo de modelos do Codex local.
+- Tarefas persistentes e retomada de histórico.
+- Tools, comandos, terminal, plano, diffs e alterações de arquivos.
+- Sandbox de leitura ou escrita limitada ao projeto.
+- Pedidos de aprovação para ações protegidas.
+- Upload local de arquivos e seleção de contexto com `@`.
+- Catálogo de skills e envio de skills para a tarefa.
+- Comandos `/new`, `/interrupt`, `/compact`, `/skills` e `/status`.
+- Responses API como modo de reserva caso o App Server não esteja disponível.
+
+### Executar localmente
+
+Requisitos: aplicativo/CLI Codex instalado e Node.js 22 ou superior.
+
+```bash
+cd app
+npm install
+npm run dev
+```
+
+Abra `http://localhost:3001`. O comando inicia automaticamente o site local, o Codex App Server e uma ponte WebSocket que só aceita a origem local do InDev. Nada é publicado.
+
+### Verificações
+
+```bash
+npm run lint
+npm test
+npm run test:e2e
+```
+
+O teste de ponta a ponta inicializa o Codex, carrega conta/modelos/skills, armazena um arquivo local, envia esse arquivo ao agente e confirma a resposta da LLM em streaming.
+
+### Limite honesto
+
+O InDev integra a superfície pública disponível no Codex App Server; ele não copia serviços proprietários internos da OpenAI nem promete paridade com partes que não foram publicadas. A base atual, porém, já é um harness funcional e não apenas uma tela simulada.
 
 ## Primeira hipótese de público
 
