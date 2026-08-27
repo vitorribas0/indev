@@ -2,6 +2,152 @@
 
 Espaço para transformar a ideia do InDev em um produto claro, útil e construível.
 
+## Como usar esta branch — Iara
+
+Esta branch mantém o Codex como harness de execução e usa a Iara como provedora de LLM. Tools, skills, sandbox, terminal, memória e arquivos continuam no InDev; somente a chamada do modelo passa pelo SDK oficial da Iara.
+
+### 1. Pré-requisitos
+
+- Git.
+- Node.js 22.13 ou superior, acompanhado do npm.
+- Python 3.9 ou superior.
+- Acesso à rede corporativa e aos Artifactory do Itaú na primeira instalação do SDK.
+- `IARA_CLIENT_ID` e `IARA_CLIENT_SECRET` com acesso ao ambiente e modelo escolhidos.
+
+Os escopos mínimos esperados são `controlplane-models.read`, `controlplane-providers.read`, `genaidataplane-chat-completions.read` e `genaidataplane-chat-completions.write`.
+
+### 2. Clonar a branch correta
+
+```bash
+git clone --branch indev-iara https://github.com/vitorribas0/indev.git
+cd indev
+```
+
+Se o repositório já existe:
+
+```bash
+git fetch origin
+git switch indev-iara
+git pull --ff-only
+```
+
+### 3. Criar o arquivo de configuração
+
+No Windows PowerShell:
+
+```powershell
+Copy-Item app\.env.example app\.env.local
+```
+
+No macOS ou Linux:
+
+```bash
+cp app/.env.example app/.env.local
+```
+
+Abra `app/.env.local` e preencha:
+
+```env
+INDEV_LLM_PROVIDER=iara
+IARA_CLIENT_ID=SEU_CLIENT_ID
+IARA_CLIENT_SECRET=SEU_CLIENT_SECRET
+IARA_ENVIRONMENT=homol
+IARA_PROVIDER=azure_openai
+IARA_MODEL=gpt-4.1-mini
+IARA_MODELS=gpt-4.1-mini,gpt-4.1
+IARA_MASSIVA_MODEL=gpt-4.1-mini
+```
+
+Ambientes aceitos: `dev`, `homol` e `prod`. Backends documentados pela Iara: `azure_openai`, `bedrock`, `openai` e `vertex`. Use somente modelos liberados no ACL da sua credencial.
+
+Nunca envie o `.env.local` ao Git. Ele já está ignorado pelo projeto.
+
+### 4. Instalar Node, Python e SDK Iara
+
+O caminho recomendado, a partir da raiz do repositório, é:
+
+```bash
+cd app
+npm ci
+npm run setup:iara
+```
+
+O setup cria um ambiente Python privado em `.indev/iara-venv` e instala `iara_genai_sdk==0.34.0` usando:
+
+```text
+Índice principal:
+https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple
+
+Índice adicional:
+https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple
+```
+
+Se precisar reproduzir a instalação manualmente no Windows PowerShell, execute a partir da raiz:
+
+```powershell
+py -3 -m venv .indev\iara-venv
+.\.indev\iara-venv\Scripts\python.exe -m pip install --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
+```
+
+No macOS ou Linux:
+
+```bash
+python3 -m venv .indev/iara-venv
+./.indev/iara-venv/bin/python -m pip install --index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/python-remotes/simple" --extra-index-url "https://artifactory.prod.aws.cloud.ihf/artifactory/api/pypi/itau-kk7-python-release/simple" "iara_genai_sdk==0.34.0"
+```
+
+Esses comandos manuais são opcionais; normalmente `npm run setup:iara` cuida de tudo.
+
+Se a rede corporativa exigir uma autoridade certificadora própria, configure no `.env.local`:
+
+```env
+IARA_CA_BUNDLE=C:\caminho\certificado-corporativo.pem
+```
+
+No macOS ou Linux, use o caminho absoluto correspondente. O setup aplica o certificado ao `pip`, ao SDK e às conexões HTTPS.
+
+### 5. Rodar o InDev no terminal
+
+Dentro de `app`:
+
+```bash
+npm run dev
+```
+
+Abra `http://localhost:3001`. O sistema permanece local; esse comando não publica nenhum site.
+
+Também é possível iniciar pela raiz:
+
+- Windows CMD: `start-indev.cmd`
+- Windows PowerShell: `.\start-indev.ps1`
+- macOS ou Linux: `./start-indev.sh`
+
+Antes de usar os inicializadores, o `.env.local` precisa estar preenchido.
+
+### 6. Confirmar que está tudo funcionando
+
+Dentro de `app`:
+
+```bash
+npm run doctor:iara
+npm run lint
+npm test
+npm run test:iara
+```
+
+Na interface, o cabeçalho e o cartão **Motor** devem mostrar `Codex App Server · Iara` e o modelo selecionado.
+
+### 7. Solução rápida de problemas
+
+- **SDK indisponível:** conecte-se à rede corporativa e execute novamente `npm run setup:iara`.
+- **401 ou 403:** valide credenciais, ambiente, escopos e ACL do modelo.
+- **Certificado inválido:** informe um arquivo PEM válido em `IARA_CA_BUNDLE`.
+- **Python não encontrado:** instale Python 3.9+ ou defina o caminho absoluto em `INDEV_IARA_PYTHON`.
+- **Porta ocupada:** encerre outra execução do InDev; as portas padrão são 3001, 4501, 4502 e 4510.
+- **Modelo não aparece:** inclua o nome em `IARA_MODELS` e confirme que ele está liberado na Iara.
+
+O detalhamento interno do adaptador está em [app/iara/README.md](app/iara/README.md).
+
 ## Em uma frase
 
 > O InDev será um ambiente de desenvolvimento com IA capaz de entender um projeto, planejar mudanças, escrever código, testar e revisar entregas — com uma experiência tão boa quanto ou melhor que a do Codex.
